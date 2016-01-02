@@ -352,14 +352,14 @@ class MerkleSet:
 
     def add_already_hashed(self, toadd):
         assert len(toadd) == 32
-        booga booga
+        raise NotImplementedError("booga booga")
 
     def remove(self, toremove):
         return self.remove_already_hashed(hasher(toadd))
 
     def remove_already_hashed(self, toremove):
         assert len(toremove) == 32
-        booga booga
+        raise NotImplementedError("booga booga")
 
     def batch_add_and_remove(self, toadd, toremove):
         self.batch_add_and_remove_already_hashed({hasher(x) for x in toadd}, {hasher(x) for x in toremove})
@@ -467,7 +467,7 @@ class MerkleSet:
                 b(1 + 32 + 2, 32)
                 return child(33)
             else:
-                b(1, 32])
+                b(1, 32)
                 return child(1)
         elif t == ONLY0:
             if tocheck_bits[depth] == 0:
@@ -479,30 +479,30 @@ class MerkleSet:
             if tocheck_bits[depth] == 1:
                 return child(33)
             else:
-                b(1, 32])
+                b(1, 32)
                 return False
         elif t == TERM0:
             if tocheck_bits[depth] == 0:
                 if tocheck == self.memory[pos + 1:pos + 1 + 32]:
-                    b(1 + 32, 32])
+                    b(1 + 32, 32)
                     return True
                 else:
-                    b(1, 64])
+                    b(1, 64)
                     return False
             else:
-                b(1, 32])
+                b(1, 32)
                 return child(65)
         elif t == TERM1:
             if tocheck_bits[depth] == 0:
-                b(1 + 32 + 2, 32]])
+                b(1 + 32 + 2, 32)
                 return child(33)
             else:
                 if tocheck == self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32]:
-                    b(1, 32])
+                    b(1, 32)
                     return True
                 else:
-                    b(1, 32])
-                    b(1 + 32 + 2, 32])
+                    b(1, 32)
+                    b(1 + 32 + 2, 32)
                     return False
         elif t == TERMBOTH:
             if tocheck_bits[depth] == 0:
@@ -510,14 +510,14 @@ class MerkleSet:
                     b(1 + 32, 32)
                     return True
                 else:
-                    b(1, 64])
+                    b(1, 64)
                     return False
             else:
                 if tocheck == self.memory[pos + 1:pos + 1 + 32]:
-                    b(1, 32])
+                    b(1, 32)
                     return True
                 else:
-                    b(1, 64])
+                    b(1, 64)
                     return False
         else:
             raise IntegrityError()
