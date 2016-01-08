@@ -24,9 +24,9 @@ term1: TERM1 1 hash 32 pos 2 hash 32
 bothterm: TERMBOTH 1 hash 32 hash 32
 
 inclusion_proof: [unit]        # EMPTY always has proofs of length 0
-unit: ONLY0 or ONLY1 or term0 or term1 or bothterm or middle or singular
-ONLY0: ONLY0 1                 # never terminal
-ONLY1: ONLY1 1                 # never terminal
+unit: only0 or only1 or term0 or term1 or bothterm or middle or singular
+only0: ONLY0 1                 # never terminal
+only1: ONLY1 1                 # never terminal
 term0: TERM0 1 hash 32         # hash is of other side
 term1: TERM1 1 hash 32         # hash is of other side
 bothterm: TERMBOTH 1 hash 32   # always terminal
@@ -34,9 +34,9 @@ middle: MIDDLE 1 hash 32       # never terminal
 singular: SINGULAR 1           # can only happen in the first position, terminal
 
 exclusion_proof: [unit]                 # EMPTY always has proofs of length 0
-unit: ONLY0 or ONLY1 or term0 or term1 or bothterm or middle or singular
-ONLY0: ONLY0 1 (hash 32)                # has a hash if different path and thus terminal
-ONLY1: ONLY1 1 (hash 32)                # has a hash if different path and thus terminal
+unit: only0 or only1 or term0 or term1 or bothterm or middle or singular
+only0: ONLY0 1 (hash 32)                # has a hash if different path and thus terminal
+only1: ONLY1 1 (hash 32)                # has a hash if different path and thus terminal
 term0: TERM0 1 hash 32 (hash 32)        # has a second hash if terminal
 term1: TERM1 1 hash 32 (hash 32)        # has a second hash if terminal
 bothterm: TERMBOTH 1 hash 32 hash 32    # always terminal
@@ -56,6 +56,11 @@ TERMBOTH = b'0x6'
 SINGULAR = b'0x7'
 
 Maybe = 2
+
+NOTSTARTED = 0
+ONELEFT = 1
+INVALIDATING = 2
+DONE = 3
 
 class IntegrityError(Exception):
     pass
@@ -266,7 +271,7 @@ def _to_bits(mystring):
 class MerkleSet:
     def __init__(self, size, depth):
         self.root = EMPTY
-        self.current_size = 0
+        self.size = 0
         self.subblock_lengths = [12]
         while len(subblock_lengths) < depth:
             self.subblock_lengths.append(65 + 2 * self.subblock_lengths[-1])
@@ -279,9 +284,9 @@ class MerkleSet:
         self.first_unused = 1
 
     def get_root(self):
-        if self.current_size == 0:
+        if self.size == 0:
             return EMPTY
-        if self.current_size == 1:
+        if self.size == 1:
             return hasher(SINGULAR + self.root)
         if self.root == INVALID:
             self.root = self._force_calculation(5, 0, len(self.subblock_lengths)-1)
@@ -359,24 +364,339 @@ class MerkleSet:
 
     def remove_already_hashed(self, toremove):
         assert len(toremove) == 32
-        raise NotImplementedError("booga booga")
+        if self.root == EMPTY:
+            return
+        if self.size == 1:
+            if self.root == toremove:
+                self.size = 0
+                self.root = EMPTY
+            return
+        status, oneval = self._remove_branch(toremove, 4, 0, len(self.subblock_lengths))
+        if status == INVALIDATING:
+            self.root = INVALID
+        elif status == DONE:
+            pass
+        elif status == ONELEFT:
+            assert self.size == 1
+            self.root = oneval
+        else:
+            assert False
+
+    # returns (status, oneval)
+    # status can be NOTSTARTED, ONELEFT, INVALIDATING, DONE
+    def _remove_branch(self, toremove, toremove_bits, pos, depth, moddepth):
+        if moddepth == 0:
+            return self._remove_outside_leaf(toremove, toremove_bits, pos, depth)
+        if moddepth == 1:
+            t = sef.memory[pos:pos + 1]
+            if t == NOTHING:
+                return NOTSTARTED, None
+        if toremove_bits[depth] == 0:
+            state, oneval = self._remove_branch(toremove, toremove_bits, pos + 1 + 64, depth + 1, moddepth - 1)
+        else:
+            state, oneval = self._remove_branch(toremove, toremove_bits, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
+        if state == DONE:
+            return DONE, None
+        if state == INVALIDATING:
+            if toremove_bits[depth] == 0:
+                ipos = pos + 1
+            else:
+                ipos + pos + 1 + 32
+            if self.memory[ipos:ipos + 32] == INVALID:
+                return DONE, None
+            else:
+                self.memory[ipos:ipos + 32] = INVALID
+                return INVALIDATING, None
+        t = self.memory[pos:pos + 1]
+        if t == MIDDLE:
+            if state != ONELEFT:
+                raise IntegrityError()
+            if toremove_bits[depth] == 0:
+                self.memory[pos:pos + 1] = TERM0
+                self.memory[pos + 1:pos + 1 + 32] = oneval
+                return INVALIDATING, None
+            else:
+                self.memory[pos:pos + 1] = TERM1
+                self.memory[pos + 1 + 32:pos + 1 + 64] = oneval
+                return INVALIDATING, None
+        elif t == ONLY0:
+            if toremove_bits[depth] == 0:
+                if state != ONELEFT:
+                    raise IntegrityError()
+                self.memory[pos:pos + 1] = NOTHING
+                self.memory[pos + 1:pos + 1 + 32] = bytes(32)
+                return ONELEFT, oneval
+            else:
+                if state != NOTSTARTED:
+                    raise IntegrityError()
+                return DONE, None
+        elif t == ONLY1:
+            if toremove_bits[depth] == 0:
+                if state != NOTSTARTED:
+                    raise IntegrityError()
+                return DONE, None
+            else:
+                if state != ONELEFT:
+                    raise IntegrityError()
+                self.memory[pos:pos + 1] = NOTHING
+                self.memory[pos + 1 + 32:pos + 1 + 64] = bytes(32)
+                return ONELEFT, oneval
+        elif t == TERM0:
+            if toremove_bits[depth] == 0:
+                if state != NOTSTARTED:
+                    raise IntegrityError()
+                if self.memory[pos + 1:pos + 1 + 32] == toremove:
+                    self.memory[pos:pos + 1] = ONLY1
+                    self.memory[pos + 1:pos + 1 + 32] = bytes(32)
+                    self.size -= 1
+                    return INVALIDATING, None
+                else:
+                    return DONE, None
+            else:
+                if state != ONELEFT:
+                    raise IntegrityError()
+                self.memory[pos:pos + 1] = TERMBOTH
+                self.memory[pos + 1 + 32:pos + 1 + 64] = oneval
+                return INVALIDATING, None
+        elif t == TERM1:
+            if toremove_bits[depth] == 0:
+                if state != ONELEFT:
+                    raies IntegrityError()
+                self.memory[pos:pos + 1] = TERMBOTH
+                self.memory[pos + 1:pos + 1 + 32] = oneval
+                return INVALIDATING, None
+            else:
+                if state != NOTSTARTED:
+                    raise IntegrityError()
+                if self.memory[pos + 1 + 32:pos + 1 + 64] == toremove:
+                    self.memory[pos:pos + 1] = ONLY0
+                    self.memory[pos + 1 + 32:pos + 1 + 64] = bytes(32)
+                    self.size -= 1
+                    return INVALIDATING, None
+                else:
+                    return DONE, None
+        elif t == TERMBOTH:
+            if state != NOTSTARTED:
+                raise IntegrityError()
+            if toremove_bits[depth] == 0:
+                if self.memory[pos + 1:pos + 1 + 32] == toremove:
+                    self.memory[pos:pos + 1] = NOTHING
+                    left = self.memory[pos + 1 + 32:pos + 1 + 64]
+                    self.memory[pos + 1:pos + 1 + 64] = bytes(64)
+                    self.size -= 1
+                    return ONELEFT, left
+                else:
+                    return DONE, None
+            else:
+                if self.memory[pos + 1 + 32:pos + 1 + 64] == toremove:
+                    self.memory[pos:pos + 1] = NOTHING
+                    left = self.memory[pos + 1:pos + 1 + 32]
+                    self.memory[pos + 1:pos + 1 + 64] = bytes(64)
+                    self.size -= 1
+                    return ONELEFT, left
+                else:
+                    return DONE, None
+        else:
+            raise IntegrityError()
+
+    # returns (status, oneval)
+    # status can be ONELEFT, INVALIDATING, DONE
+    def _remove_outside_leaf(self, toremove, toremove_bits, pos, depth):
+        block = from_bytes(self.memory[pos:pos + 4])
+        pos = from_bytes(self.memory[pos + 4:pos + 6])
+        if pos == 0:
+            state, oneval = self._remove_branch(toremove, toremove_bits, block * self.block_size + 4, depth, len(self.subblock_lengths) - 1)
+            if state == DONE:
+                return DONE, None
+            elif state == INVALIDATING:
+                return state, oneval
+            elif state == ONELEFT:
+                self.memory[pos:pos + 6] = bytes(6)
+                self.memory[block + self.block_size:(block + 1) * self.block_size] = bytes(blocksize)
+                self.memory[block * self.blocksize:block * self.block_size + 4] = to_bytes(self.first_unused)
+                self.first_unused = block
+                return state, oneval
+            else:
+                raise IntegrityError()
+        else:
+            block_begin = block * self.block_size
+            state, oneval = self._remove_leaf(toremove, block_begin, pos, depth)
+            if state == DONE:
+                return DONE, None
+            if state == INVALIDATING:
+                return INVALIDATING, None
+            if state == ONELEFT:
+                num_inputs = from_bytes(self.memory[block_begin + 2:blockbegin + 4])
+                if numinputs == 1:
+                    first_unused = from_bytes(self.memory[block_begin:block_begin + 2])
+                    self.memory[block_begin:block_begin + first_unused] = bytes(first_unused)
+                    self.memory[block_begin:block_begin + 4] = to_bytes(self.first_unused)
+                    self.first_unused = block
+                else:
+                    self.memory[block_begin + 2:block_begin + 4] = to_bytes(numinputs - 1)
+                self.memory[pos:pos + 6] = bytes(6)
+                return ONELEFT, oneval
+            else:
+                raise IntegrityError()
+
+    # returns (status, oneval)
+    # status can be ONELEFT, INVALIDATING, DONE
+    def _remove_leaf(self. toremove, toremove_bits, blockbegin, pos, depth):
+        oldpos = pos
+        pos += blockbegin
+        t = self.memory[pos:pos + 1]
+        if t == MIDDLE:
+            if toremove_bits[depth] == 0:
+                state, oneval = self._remove_leaf(toremove, toremove_bits, blockbegin, from_bytes(self.memory[pos + 1 + 32:pos + 1 + 32 + 2]), depth + 1)
+                if state == DONE:
+                    return DONE, None
+                elif state == INVALIDATING:
+                    if self.memory[pos + 1:pos + 1 + 32] == INVALID:
+                        return DONE, None
+                    else:
+                        self.memory[pos + 1:pos + 1 + 32] = INVALID
+                        return INVALIDATING, None
+                elif state == ONELEFT:
+                    self.memory[pos:pos + 1] = TERM0
+                    self.memory[pos + 1:pos + 1 + 32] = oneval
+                    self.memory[pos + 1 + 32:pos + 1 + 64 + 2] = self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32 + 2]
+                    return INVALIDATING, None
+                else:
+                    raise IntegrityError()
+            else:
+                state, oneval = self._remove_leaf(toremove, toremove_bits, blockbegin, from_bytes(self.memory[pos + 1 + 32 + 2 + 32:pos + 1 + 32 + 2 + 32 + 2]), depth + 1)
+                if state == DONE:
+                    return DONE, None
+                elif state == INVALIDATING:
+                    if self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] == INVALID:
+                        return DONE, None
+                    else:
+                        self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] = INVALID
+                        return INVALIDATING, None
+                elif state == ONELEFT:
+                    self.memory[pos:pos + 1] = TERM1
+                    self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] = INVALID
+                    return INVALIDATING, None
+                else:
+                    raise IntegrityError()
+        elif t == ONLY0:
+            if toremove_bits[depth] == 0:
+                state, oneval = self._remove_leaf(toremove, toremove_bits, blockbegin, from_bytes(self.memory[pos + 1 + 32:pos + 1 + 32 + 2]) , depth + 1)
+                if state == DONE:
+                    return DONE, None
+                elif state == INVALIDATING:
+                    if self.memory[pos + 1:pos + 1 + 32] == INVALID:
+                        return DONE, None
+                    else:
+                        self.memory[pos + 1:pos + 1 + 32] = INVALID
+                        return INVALIDATING, None
+                elif state == ONELEFT:
+                    return ONELEFT, oneval
+                else:
+                    raise IntegrityError()
+            else:
+                return DONE, None
+        elif t == ONLY1:
+            if toremove_bits[depth] == 0:
+                return DONE, None
+            else:
+                state, oneval = self._remove_leaf(toremove, toremove_bits, blockbegin, from_bytes(self.memory[pos + 1 + 32:pos + 1 + 32 + 2]), depth + 1)
+                if state == DONE:
+                    return DONE, None
+                elif state == INVALIDATING:
+                    if self.memory[pos + 1:pos + 1 + 32] == INVALID:
+                        return DONE, None
+                    else:
+                        self.memory[pos + 1:pos + 1 + 32] = INVALID
+                        return INVALIDATING, None
+                elif state == ONELEFT:
+                    return ONELEFT, oneval
+                else:
+                    raise IntegrityError()
+        elif t == TERM0:
+            if toremove_bits[depth] == 0:
+                if self.memory[pos + 1:pos + 1 + 32] != toremove:
+                    return DONE, None
+                self.size -= 1
+                self.memory[0] = ONLY1
+                self.memory[pos + 1:pos + 1 + 32 + 2] = self.memory[pos + 1 + 32:pos + 1 + 32 + 32 + 2]
+                return INVALIDATING, None
+            else:
+                state, oneval = self._remove_leaf(toremove, toremove_bits, blockbegin, from_bytes(self.memory[pos + 1 + 64:pos + 1 + 64 + 2]), depth + 1)
+                if state == DONE:
+                    return DONE, None
+                elif state == INVALIDATING:
+                    if self.memory[pos + 1 + 32:pos + 1 + 64] == INVALID:
+                        return DONE, None
+                    else:
+                        self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
+                        return INVALIDATING, None
+                elif state == ONELEFT:
+                    self.memory[pos:pos + 1] = TERMBOTH
+                    self.memory[pos + 1 + 32:pos + 1 + 64] = oneval
+                    return INVALIDATING, None
+                else:
+                    raise IntegrityError()
+        elif t == TERM1:
+            if toremove_bits[depth] == 0:
+                state, oneval = self._remove_leaf(toremove, toremove_bits, blockbegin, from_bytes(self.memory[pos + 1 + 32:pos + 1 + 32 + 2]), depth + 1)
+                if state == DONE:
+                    return DONE, None
+                elif state == INVALIDATING:
+                    if self.memory[pos + 1:pos + 1 + 32] == INVALID:
+                        return DONE, None
+                    else:
+                        self.memory[pos + 1:pos + 1 + 32] = INVALID
+                        return INVALIDATING, None
+                elif state == ONELEFT:
+                    self.memory[pos:pos + 1] = TERMBOTH
+                    self.memory[pos + 1:pos + 1 + 32] = oneval
+                    self.memory[pos + 1 + 32:pos + 1 + 64] = self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32]
+                    return INVALIDATING, None
+                else:
+                    raise IntegrityError()
+            else:
+                if self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] != toremove:
+                    return DONE, None
+                self.size -= 1
+                self.memory[pos] = ONLY0
+                return INVALIDATING, None
+        elif t == TERMBOTH:
+            if toremove_bits[depth] == 0:
+                if self.memory[pos + 1:pos + 1 + 32] != toremove:
+                    return DONE, None
+                self.size -= 1
+                return ONELEFT, self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32], oldpos
+            else:
+                if self.memory[pos + 1 + 32:pos + 1 + 32 + 2 + 32] != toremove:
+                    return DONE, None
+                self.size -= 1
+                return ONELEFT, self.memory[pos + 1:pos + 1 + 32]
+        else:
+            raise IntegrityError()
 
     def batch_add_and_remove(self, toadd, toremove):
         self.batch_add_and_remove_already_hashed({hasher(x) for x in toadd}, {hasher(x) for x in toremove})
 
     def batch_add_and_remove_already_hashed(self, toadd, toremove):
-        tadd = set(toadd)
-        toremove = set(toremove)
-        both = toadd.intersection(toremove)
-        toadd.difference_remove(both)
-        toremove.difference_remove(both)
-        updates = [(x, 0) for x in toadd] + [(x, 1) for x in toremove]
-        updates.sort()
-        for val, type in updates:
-            if type == 0:
-                self.add_already_hashed(val)
-            else:
-                self.remove_already_hashed(val)
+        toadd = sorted(toadd)
+        toremove = sorted(toremove)
+        addpos = 0
+        removepos = 0
+        while addpos < len(toadd) or removepos < len(toremove):
+            while addpos < len(toadd) and toadd[addpos] < toremove[removepos]:
+                self.add_already_hashed(toadd[addpos])
+                addpos += 1
+            while removepos < len(toremove) and toremove(removepos) < toadd[addpos]:
+                self.remove_already_hashed(toremove[removepos])
+                updates.append((toremove[removepos], 0))
+                removepos += 1
+            if addpos < len(toadd) and removepos < len(toremove) and toadd[addpos] == toremove[removepos]:
+                lastval = toadd[addpos]
+                while addpos < len(toadd) and toadd[addpos] == lastval:
+                    addpos += 1
+                while removepos < len(toremove) and toremove[removepos] == lastval:
+                    removepos += 1
 
     def are_any_included(self, tocheck):
         return self.are_any_included_already_hashed([hasher(x) for x in tochecks])
@@ -529,9 +849,9 @@ class MerkleSet:
         assert len(mystr) == 32
         self.get_root()
         buf = _bytesio()
-        if self.current_size == 0:
+        if self.size == 0:
             return False, b''
-        if self.current_size == 1:
+        if self.size == 1:
             if tocheck == self.root:
                 return True, SINGULAR
             else:
