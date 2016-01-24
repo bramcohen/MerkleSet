@@ -3,6 +3,15 @@ from hashlib import sha256
 def hasher(mystr):
     return sha256(mystr).digest()
 
+# TODO: Port to C
+# TODO: Optimize! Benchmark!
+# TODO: change the state constants to make bit twiddling a lot prettier
+# TODO: truncate the children when calculating nodes to be more sha2-optimized
+# TODO: add multi-threading support
+# TODO: add support for continuous self-auditing
+# TODO: Try heuristically calculating hashes non-lazily when they're likely to be needed later
+# TODO: Try unrolling all this recursivity to improve performance
+
 """
 memory: [block]
 block: empty or branch or leaf
@@ -12,7 +21,7 @@ empty: next 4                                                     # 0 for end of
 branch: active_child 4 balanced[size]                             # active_child 0 when there are none
 balanced[n]: type 1 hash 32 hash 32 balanced[n-1] balanced[n-1]   # hashes can be EMPTY or INVALID
 balanced[0]: type 1 hash 32 hash 32 block 4 pos 2 block 4 pos 2   # pos 0 means child is a branch
-type: ONLY0 or ONLY1 or TERM0 or TERM1 or TERMBOTH or MIDDLE      # no singular, that's handled in root
+type: ONLY0 or ONLY1 or TERM0 or TERM1 or TERMBOTH or MIDDLE or NOTHING      # no singular, that's handled in root. NOTHING should be in all unallocated positions
 
 leaf: first_unused 2 num_inputs 2 data                            # first_unused is a position in bytes in the current block
 data: [only0 or only1 or term0 or term1 or bothterm or middle]    # there may be gaps between items
@@ -71,7 +80,7 @@ def confirm_included(root, val, proof):
     if root == EMPTY:
         return False
     if proof == SINGULAR:
-        return hasher(SINGULAR + val) == root
+        return hasher(val) == root
     possible, newroot = self._confirm_included(_to_bits(val), 0, proof, 0, val)
     return possible and newroot == root
 
@@ -160,7 +169,7 @@ def confirm_not_included(root, val, proof):
     if root == EMPTY:
         return len(proof) == 0
     if len(proof) > 0 and proof[0:1] == SINGULAR:
-        return len(proof) == 1 + 32 and proof[1:1 + 32] != val and hasher(proof) == root
+        return len(proof) == 1 + 32 and proof[1:1 + 32] != val and hasher(proof[1:]) == root
     possible, newroot = self._confirm_not_included(_to_bits(val), 0, proof, 0, val)
     return possible and newroot == root
 
@@ -287,10 +296,13 @@ class MerkleSet:
         if self.size == 0:
             return EMPTY
         if self.size == 1:
-            return hasher(SINGULAR + self.root)
+            return hasher(self.root)
         if self.root == INVALID:
             self.root = self._force_calculation(5, 0, len(self.subblock_lengths)-1)
         return self.root
+
+    def get_size(self):
+        return self.size
 
     def _force_calculation(self, pos, depth, moddepth):
         if moddepth == 0:
@@ -357,7 +369,132 @@ class MerkleSet:
 
     def add_already_hashed(self, toadd):
         assert len(toadd) == 32
-        raise NotImplementedError("booga booga")
+        if self.size == 0:
+            self.root = toadd
+            self.size = 1
+        elif self.size == 1:
+            self._add_branch_two(self.root, toadd, 0, 4, 0, len(self.subblock_lengths) - 1)
+            self.root = INVALID
+        else:
+            if self._add_branch_one(toadd, _to_bits(toadd), 0, 4, 0, len(self.subblock_lengths) - 1) == INVALIDATING:
+                self.root = INVALID
+
+    # returns NOTSTARTED, INVALIDATING, DONE
+    def _add_branch_one(self, toadd, toadd_bits, block, pos, depth, moddepth):
+        if moddepth == 0:
+            newblock = from_bytes(self.memory[pos:pos + 4])
+            pos = from_bytes(self.memory[pos + 4:pos + 6])
+            if pos == 0:
+                return self._add_branch_one(toadd_bits, toadd_bits, newblock, newblock * self.block_size + 4, depth, len(self.subblock_lengths) - 1)
+            else:
+                state, oneval = self._add_leaf_one(toadd, toadd_bits, block, newblock * self.blocksize, pos, depth)
+                if oneval != 0:
+                    self.memory[pos + 4:pos + 6] = to_bytes(oneval)
+                return state
+        if moddepth == 1:
+            if self.memory[pos:pos + 1] == NOTHING:
+                return NOTSTARTED
+        newpos = pos + 1 + 64
+        if toadd_bits[depth] == 1:
+            newpos += self.subblock_lengths[moddepth - 1]
+        r = self._add_branch_one(toadd, toadd_bits, block, newpos, depth + 1, moddepth - 1)
+        if r == DONE:
+            return DONE
+        elif r == INVALIDATING:
+            npos = pos + 1
+            if toadd_bits[depth] == 1:
+                npos += 32
+            if self.memory[npos:npos + 32] == INVALID:
+                return DONE
+            self.memory[npos:npos + 32] = INVALID
+            return INVALIDATING
+        t = self.memory[pos:pos + 1]
+        if t == NOTHING:
+            return NOTSTARTED
+        if toadd_bits[depth] == 0:
+            if t in (MIDDLE, ONLY0, TERM1):
+                r = self._add_branch_one(toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
+                if r == DONE:
+                    return DONE
+                elif r == INVALIDATING:
+                    if self.memory[pos + 1:pos + 1 + 32] == INVALID:
+                        return DONE
+                    self.memory[pos + 1:pos + 1 + 32] = INVALID
+                    return INVALIDATING
+            elif t == ONLY1:
+                self.memory[pos:pos + 1] = TERM0
+                self.memory[pos + 1:pos + 1 + 32] = toadd
+                self.size += 1
+                return INVALIDATING
+            elif t == TERM0:
+                r = self._add_branch_two(self.memory[pos + 1:pos + 1 + 32], toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
+                if r == DONE:
+                    return DONE
+                else:
+                    assert r == INVALIDATING:
+                    self.memory[pos:pos + 1] = MIDDLE
+                    self.memory[pos + 1:pos + 1 + 32] = INVALID
+                    return INVALIDATING
+            elif t == TERMBOTH:
+                r = self._add_branch_two(self.memory[pos + 1:pos + 1 + 32], toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
+                if r == DONE:
+                    return DONE
+                else:
+                    assert r == INVALIDATING:
+                    self.memory[pos:pos + 1] = TERM1
+                    self.memory[pos + 1:pos + 1 + 32] = INVALID
+                    return INVALIDATING
+            else:
+                raise IntegrityError()
+        else:
+            if t in (MIDDLE, ONLY1, TERM0):
+                r = self._add_branch_one(toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
+                if r == DONE:
+                    return DONE
+                elif r == INVALIDATING:
+                    if self.memory[pos + 1 + 32:pos + 1 + 64] == INVALID:
+                        return DONE
+                    self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
+                    return INVALIDATING
+            elif t == ONLY0:
+                self.memory[pos:pos + 1] = TERM1
+                self.memory[pos + 1 + 32:pos + 1 + 64] = toadd
+                self.size += 1
+                return INVALIDATING
+            elif t == TERM1:
+                r = self._add_branch_two(self.memory[pos + 1 + 32:pos + 1 + 64], toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
+                if r == DONE:
+                    return DONE
+                else:
+                    assert r == INVALIDATING:
+                    self.memory[pos:pos + 1] = MIDDLE
+                    self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
+                    return INVALIDATING
+            elif t == TERMBOTH:
+                r = self._add_branch_two(self.memory[pos + 1 + 32:pos + 1 + 64], toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
+                if r == DONE:
+                    return DONE
+                else:
+                    assert r == INVALIDATING:
+                    self.memory[pos:pos + 1] = TERM0
+                    self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
+                    return INVALIDATING
+            else:
+                raise IntegrityError()
+
+    # returns INVALIDATING, DONE
+    def _add_branch_two(self, old, toadd, toadd_bits, block, pos, depth, moddepth):
+        booga booga
+
+    # returns state, newpos
+    # state can be INVALIDATING, DONE
+    def _add_leaf_one(self, toadd, toadd_bits, oldblock, blockbegin, pos, depth):
+        booga booga
+
+    # returns state, newpos
+    # state can be INVALIDATING, DONE
+    def _add_leaf_two(self, oldval, toadd, toadd_bits, oldblock, blockbegin, pos, depth):
+        booga booga
 
     def remove(self, toremove):
         return self.remove_already_hashed(hasher(toadd))
@@ -408,7 +545,9 @@ class MerkleSet:
                 self.memory[ipos:ipos + 32] = INVALID
                 return INVALIDATING, None
         t = self.memory[pos:pos + 1]
-        if t == MIDDLE:
+        if t == NOTHING:
+            return NOTSTARTED
+        elif t == MIDDLE:
             if state != ONELEFT:
                 raise IntegrityError()
             if toremove_bits[depth] == 0:
@@ -698,78 +837,115 @@ class MerkleSet:
                 while removepos < len(toremove) and toremove[removepos] == lastval:
                     removepos += 1
 
-    def are_any_included(self, tocheck):
-        return self.are_any_included_already_hashed([hasher(x) for x in tochecks])
-
-    def are_any_included_already_hashed(self, tocheck):
-        for t in sorted(tocheck):
-            if self.is_included(t):
-                return True
-        return False
-
-    def are_all_included(self, tocheck):
-        return self.are_all_included_already_hashed([hasher(x) for x in tochecks])
-
-    def are_all_included_already_hashed(self, tocheck):
-        for t in sorted(tocheck):
-            if not t.is_included:
-                return False
-        return True
-
     def is_included(self, tocheck):
         return self.is_included_already_hashed(hasher(tocheck))
 
     def is_included_already_hashed(self, tocheck):
         assert len(mystr) == 32
-        return self._is_included(tocheck, _to_bits(tocheck), 5, 0, len(self.subblock_lengths)-1, None)
+        return self._is_included(tocheck, None)
 
-    def _is_included(self, tocheck, tocheck_bits, pos, depth, moddepth):
+    def is_included_make_proof(self, tocheck):
+        return self.is_included_make_proof_already_hashed(hasher(tocheck))
+
+    def is_included_make_proof_already_hashed(self, tocheck):
+        assert len(tocheck) == 32
+        buf = _bytesio()
+        r = return self._is_included(tocheck, buf)
+        return r, buf.get()
+
+    def _is_included_outer(self, tocheck, buf):
+        self.get_root()
+        if self.size == 0:
+            return False
+        if self.size == 1:
+            if buf is not None:
+                buf.add(SINGULAR)
+            if tocheck == self.root:
+                return True
+            else:
+                if buf is not None:
+                    buf.add(self.root)
+                return False
+        return self._is_included(tocheck, _to_bits(tocheck), 5, 0, len(self.subblock_lengths)-1, None, buf)
+
+    def _is_included(self, tocheck, tocheck_bits, pos, depth, moddepth, buf):
+        if moddepth == 0:
+            bnum = from_bytes(self.memory[pos:pos + 4])
+            bpos = from_bytes(self.memory[pos + 4:pos + 6])
+            if bpos == 0:
+                return self._is_included(tocheck, tocheck_bits, bnum * self.block_size + 4, depth, len(self.subblock_lengths), buf)
+            else:
+                return self._is_included_leaf(tocheck, tocheck_bits, bnum * self.block_size, bpos, depth, buf)
         newpos = pos + 65
         if tocheck_bits[depth] == 1:
             newpos += self.subblock_lengths[moddepth - 1]
-        def check_block():
-            if moddepth != 1:
-                raise IntegrityError()
-            bnum = from_bytes(self.memory[newpos:newpos + 4])
-            bpos = from_bytes(self.memory[newpos + 4:newpos + 6])
-            if bpos == 0:
-                return self._is_included(tocheck, tocheck_bits, bnum * self.block_size + 4, depth + 1, len(self.subblock_lengths))
-            else:
-                return self._is_included_leaf(tocheck, tocheck_bits, bnum * self.block_size, bpos, depth + 1)
-        if moddepth > 1:
-            val = self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1)
-            if val != Maybe:
-                return val
+        def b(x):
+            if buf:
+                buf.add(x)
+        if buf is None and moddepth > 1:
+            v = self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
+            if v != Maybe:
+                return v
         t = self.memory[pos:pos + 1]
+        b(t)
         if t == NOTHING:
             return Maybe
         elif t == MIDDLE:
-            return check_block()
+            if tocheck_bits[depth] == 1:
+                b(self.memory[pos + 1:pos + 1 + 32])
+            else:
+                b(self.memory[pos + 1 + 32:pos + 1 + 64])
+            return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
         elif t == ONLY0:
             if tocheck_bits[depth] == 0:
-                return check_block()
+                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
             else:
+                b(self.memory[pos + 1:pos + 1 + 32])
                 return False
         elif t == ONLY1:
             if tocheck_bits[depth] == 0:
+                b(self.memory[pos + 1:pos + 1 + 32])
                 return False
             else:
-                return check_block()
+                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
         elif t == TERM0:
             if tocheck_bits[depth] == 0:
-                return self.memory[pos + 1:pos + 1 + 32] == tocheck
+                if self.memory[pos + 1:pos + 1 + 32] == tocheck:
+                    b(self.memory[pos + 1 + 32:pos + 1 + 64])
+                    return True
+                else:
+                    b(self.memory[pos + 1:pos + 1 + 64])
+                    return False
             else:
-                return check_block()
+                b(self.memory[pos + 1:pos + 1 + 32])
+                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
         elif t == TERM1:
             if tocheck_bits[depth] == 0:
-                return check_block()
+                b(self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32])
+                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
             else:
-                return self.memory[pos + 1 + 32:pos + 1 + 64] == tocheck
+                if self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] == tocheck:
+                    b(self.memory[pos + 1:pos + 1 + 32])
+                    return True
+                else:
+                    b(self.memory[pos + 1:pos + 1 + 32])
+                    b(self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32])
+                    return False
         elif t == TERMBOTH:
             if tocheck_bits[depth] == 0:
-                return self.memory[pos + 1:pos + 1 + 32] == tocheck
+                if self.memory[pos + 1:pos + 1 + 32] == tocheck:
+                    b(self.memory[pos + 1 + 32:pos + 1 + 64])
+                    return True
+                else:
+                    b(self.memory[pos + 1:pos + 1 + 64])
+                    return False
             else:
-                return self.memory[pos + 1 + 32:pos + 1 + 64] == tocheck
+                if self.memory[pos + 1 + 32:pos + 1 + 64] == tocheck:
+                    b(self.memory[pos + 1:pos + 1 + 32])
+                    return True
+                else:
+                    b(self.memory[pos + 1:pos + 1 + 64])
+                    return False
         else:
             raise IntegrityError()
 
@@ -838,95 +1014,6 @@ class MerkleSet:
                     return True
                 else:
                     b(1, 64)
-                    return False
-        else:
-            raise IntegrityError()
-
-    def is_included_make_proof(self, tocheck):
-        return is_included_make_proof_already_hashed(hasher(tocheck))
-
-    def is_included_make_proof_already_hashed(self, tocheck):
-        assert len(mystr) == 32
-        self.get_root()
-        buf = _bytesio()
-        if self.size == 0:
-            return False, b''
-        if self.size == 1:
-            if tocheck == self.root:
-                return True, SINGULAR
-            else:
-                return False, SINGULAR + self.root
-        r = self._is_included_make_proof(tocheck, _to_bits(tocheck), 5, 0, len(self.subblock_lengths)-1, None, buf)
-        return r, buf.get()
-
-    def _is_included_make_proof(self, tocheck, tocheck_bits, pos, depth, moddepth, buf):
-        if moddepth == 0:
-            bnum = from_bytes(self.memory[pos:pos + 4])
-            bpos = from_bytes(self.memory[pos + 4:pos + 6])
-            if bpos == 0:
-                return self._is_included_make_proof(tocheck, tocheck_bits, bnum * self.block_size + 4, depth, len(self.subblock_lengths), buf)
-            else:
-                return self._is_included_leaf(tocheck, tocheck_bits, bnum * self.block_size, bpos, depth, buf)
-        newpos = pos + 65
-        if tocheck_bits[depth] == 1:
-            newpos += self.subblock_lengths[moddepth - 1]
-        t = self.memory[pos:pos + 1]
-        buf.add(t)
-        if t == MIDDLE:
-            if tocheck_bits[depth] == 1:
-                buf.add(self.memory[pos + 1:pos + 1 + 32])
-            else:
-                buf.add(self.memory[pos + 1 + 32:pos + 1 + 64])
-            return self._is_included_make_proof(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-        elif t == ONLY0:
-            if tocheck_bits[depth] == 0:
-                return self._is_included_make_proof(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-            else:
-                buf.add(self.memory[pos + 1:pos + 1 + 32])
-                return False
-        elif t == ONLY1:
-            if tocheck_bits[depth] == 0:
-                buf.add(self.memory[pos + 1:pos + 1 + 32])
-                return False
-            else:
-                return self._is_included_make_proof(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-        elif t == TERM0:
-            if tocheck_bits[depth] == 0:
-                if self.memory[pos + 1:pos + 1 + 32] == tocheck:
-                    buf.add(self.memory[pos + 1 + 32:pos + 1 + 64])
-                    return True
-                else:
-                    buf.add(self.memory[pos + 1:pos + 1 + 64])
-                    return False
-            else:
-                buf.add(self.memory[pos + 1:pos + 1 + 32])
-                return self._is_included_make_proof(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-        elif t == TERM1:
-            if tocheck_bits[depth] == 0:
-                buf.add(self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32])
-                return self._is_included_make_proof(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-            else:
-                if self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] == tocheck:
-                    buf.add(self.memory[pos + 1:pos + 1 + 32])
-                    return True
-                else:
-                    buf.add(self.memory[pos + 1:pos + 1 + 32])
-                    buf.add(self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32])
-                    return False
-        elif t == TERMBOTH:
-            if tocheck_bits[depth] == 0:
-                if self.memory[pos + 1:pos + 1 + 32] == tocheck:
-                    buf.add(self.memory[pos + 1 + 32:pos + 1 + 64])
-                    return True
-                else:
-                    buf.add(self.memory[pos + 1:pos + 1 + 64])
-                    return False
-            else:
-                if self.memory[pos + 1 + 32:pos + 1 + 64] == tocheck:
-                    buf.add(self.memory[pos + 1:pos + 1 + 32])
-                    return True
-                else:
-                    buf.add(self.memory[pos + 1:pos + 1 + 64])
                     return False
         else:
             raise IntegrityError()
