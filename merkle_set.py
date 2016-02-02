@@ -3,9 +3,11 @@ from hashlib import sha256
 def hasher(mystr):
     return sha256(mystr).digest()
 
+# TODO: Make all ONLY0 and ONLY1 before a TERMBOTH implicit
+# TODO: change the state constants to make bit twiddling a lot prettier
+# TODO: move validity information to bits in the metadata byte
 # TODO: Port to C
 # TODO: Optimize! Benchmark!
-# TODO: change the state constants to make bit twiddling a lot prettier
 # TODO: truncate the children when calculating nodes to be more sha2-optimized
 # TODO: add multi-threading support
 # TODO: add support for continuous self-auditing
@@ -427,6 +429,8 @@ class MerkleSet:
                 self.size += 1
                 return INVALIDATING
             elif t == TERM0:
+                if self.memory[pos + 1:pos + 1 + 32] == toadd:
+                    return DONE
                 r = self._add_branch_two(self.memory[pos + 1:pos + 1 + 32], toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
                 if r == DONE:
                     return DONE
@@ -436,6 +440,8 @@ class MerkleSet:
                     self.memory[pos + 1:pos + 1 + 32] = INVALID
                     return INVALIDATING
             elif t == TERMBOTH:
+                if self.memory[pos + 1:pos + 1 + 32] == toadd:
+                    return DONE
                 r = self._add_branch_two(self.memory[pos + 1:pos + 1 + 32], toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
                 if r == DONE:
                     return DONE
@@ -462,6 +468,8 @@ class MerkleSet:
                 self.size += 1
                 return INVALIDATING
             elif t == TERM1:
+                if self.memory[pos + 1 + 32:pos + 1 + 64] == toadd:
+                    return DONE
                 r = self._add_branch_two(self.memory[pos + 1 + 32:pos + 1 + 64], toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
                 if r == DONE:
                     return DONE
@@ -471,6 +479,8 @@ class MerkleSet:
                     self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
                     return INVALIDATING
             elif t == TERMBOTH:
+                if self.memory[pos + 1 + 32:pos + 1 + 64] == toadd:
+                    return DONE
                 r = self._add_branch_two(self.memory[pos + 1 + 32:pos + 1 + 64], toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
                 if r == DONE:
                     return DONE
@@ -484,16 +494,167 @@ class MerkleSet:
 
     # returns INVALIDATING, DONE
     def _add_branch_two(self, old, toadd, toadd_bits, block, pos, depth, moddepth):
-        booga booga
+        self._add_branch_two_inner(old, _to_bits(old), toadd, toadd_bits, block, pos, depth, moddepth)
+
+    def _add_branch_two_inner(self, old, oldbits, toadd, toadd_bits, block, pos, depth, moddepth):
+        if moddepth == 0:
+            blockbegin = block * self.block_size
+            active_child = from_bytes(self.memory[blockbegin:blockbegin + 4])
+            if active_child == 0:
+                new_child = self.first_unused
+                if new_child == 0:
+                    raise OutOfMemoryError()
+                self.memory[blockbegin:blockbegin + 4] = to_bytes(new_child, 4)
+                newbegin = new_child * self.block_size
+                self.first_unused = from_bytes(self.memory[newbegin:newbegin + 4])
+                self.memory[newbegin:newbegin + 2] = to_bytes(4, 2)
+                self.memory[newbegin + 2:newbegin + 4] = to_bytes(0, 2)
+            else:
+                newbegin = active_child * self.block_size
+            result, newpos = self._add_leaf_two(old, oldbits, toadd, toadd_bits, block, newbegin, depth, from_bytes(self.memory[newbegin:newbegin + 2]))
+            if result == DONE:
+                return DONE
+            self.memory[newbegin + 2:newbegin + 4] = to_bytes(from_bytes(self.memory[newbegin + 2:newbegin + 4]) + 1, 2)
+            self.memory[pos:pos + 4] = to_bytes(active_child)
+            self.memory[pos + 4:pos + 6] = to_bytes(newpos)
+        if self.memory[pos:pos + 1] != NOTHING:
+            raise IntegrityError()
+        if oldbits[depth] != toadd_bits[depth]:
+            self.memory[pos:pos + 1] = TERMBOTH
+            if oldbits[depth] == 0:
+                self.memory[pos + 1:pos + 1 + 32] = old
+                self.memory[pos + 1 + 32:pos + 1 + 64] = toadd
+            else:
+                self.memory[pos + 1:pos + 1 + 32] = toadd
+                self.memory[pos + 1 + 32:pos + 1 + 64] = old
+            return INVALIDATING
+        newpos = pos + 1 + 64
+        if oldbits[depth] == 1:
+            newpos += self.subblock_lengths[moddepth - 1]
+        return self._add_branch_two_inner(self, old, oldbits, toadd, toadd_bits, block, newpos, depth + 1, moddepth - 1)
 
     # returns state, newpos
     # state can be INVALIDATING, DONE
     def _add_leaf_one(self, toadd, toadd_bits, oldblock, blockbegin, pos, depth):
-        booga booga
+        t = self.memory[pos:pos + 1]
+        if t == MIDDLE:
+            if toadd_bits[depth] == 0:
+                r, p = self._add_leaf_one(toadd, toadd_bits, oldblock, blockbegin, from_bytes(self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 32 + 2]), depth + 1)
+                if r == DONE:
+                    return DONE
+                if p != 0:
+                    self.memory[pos + 1 + 32:pos + 1 + 32 + 2] = to_bytes(p, 2)
+                if self.memory[pos + 1:pos + 1 + 32] == INVALID:
+                    return DONE, 0
+                self.memory[pos + 1:pos + 1 + 32] = INVALID
+                return INVALIDATING, 0
+            else:
+                r, p = self._add_leaf_one(toadd, toadd_bits, oldblock, blockbegin, from_bytes(self.memory[blockbegin + pos + 1 + 32 + 2 + 32:blockbegin + pos + 1 + 32 + 2 + 32 + 2]), depth + 1)
+                if r == DONE:
+                    return DONE
+                if p != 0:
+                    self.memory[pos + 1 + 32 + 2 + 32:pos + 1 + 32 + 2 + 32 + 2] = to_bytes(p, 2)
+                if self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] == INVALID:
+                    return DONE, 0
+                self.memory[pos + 1:pos + 1 + 32] = INVALID
+                return INVALIDATING, 0
+        elif t == ONLY0:
+            if toadd_bits[depth] == 0:
+                r, p = self._add_leaf_one(toadd, toadd_bits, oldblock, blockbegin, from_bytes(self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 32 + 2]), depth + 1)
+                if r == DONE:
+                    return DONE
+                if p != 0:
+                    self.memory[pos + 1 + 32:pos + 1 + 32 + 2] = to_bytes(p, 2)
+                if self.memory[p + 1:p + 1 + 32] == INVALID:
+                    return DONE, 0
+                self.memory[pos + 1:pos + 1 + 32] = INVALID
+                return INVALIDATING, 0
+            else:
+                booga booga
+        elif t == ONLY1:
+            if toadd_bits[depth] == 0:
+                booga booga
+            else:
+                r, p = self._add_leaf_one(toadd, toadd_bits, oldblock, blockbegin, from_bytes(self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 32 + 2]), depth + 1)
+                if r == DONE:
+                    return DONE
+                if p != 0:
+                    self.memory[pos + 1 + 32:pos + 1 + 32 + 2] = to_bytes(p, 2)
+                if self.memory[p + 1:p + 1 + 32] == INVALID:
+                    return DONE, 0
+                self.memory[pos + 1:pos + 1 + 32] = INVALID
+                return INVALIDATING, 0
+        elif t == TERM0:
+            if toadd_bits[depth] == 0:
+                oldval = self.memory[blockbegin + pos + 1:blockbegin + pos + 1 + 32]
+                newfirst = from_bytes(self.memory[blockbegin:blockbegin + 2])
+                r, newbegin = self._add_leaf_two(oldval, _to_bits(oldval), toadd, toadd_bits, oldblock, blockbegin, depth + 1, newfirst + 1 + 32 + 2 + 32 + 2)
+                if r == DONE:
+                    return DONE
+                self.memory[newfirst:newfirst + 1] = MIDDLE
+                self.memory[newfirst + 1:newfirst + 1 + 32] = INVALID
+                self.memory[newfirst + 1 + 32:newfirst + 1 + 32 + 2] = to_bytes(p, 2)
+                self.memory[newfirst + 1 + 32 + 2:newfirst + 1 + 32 + 2 + 32 + 2] = self.memory[pos + 1 + 32:pos + 1 + 32 + 32 + 2]
+                self.memory[blockbegin:blockbegin + 2] = to_bytes(newbegin, 2)
+                return INVALIDATING, newfirst
+            else:
+                r, p = self._add_leaf_one(toadd, toadd_bits, oldblock, blockbegin, from_bytes(self.memory[blockbegin + pos + 1 + 64:blockbegin + pos + 1 + 64 + 2]), depth + 1)
+                if r == DONE:
+                    return DONE
+                if p != 0:
+                    self.memory[blockbegin + pos + 1 + 64:blockbegin + pos + 1 + 64 + 2] = to_bytes(p, 2)
+                if self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 64] == INVALID:
+                    return DONE, 0
+                self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 64] = INVALID
+                return INVALIDATING, 0
+        elif t == TERM1:
+            if toadd_bits[depth] == 0:
+                r, p = self._add_leaf_one(toadd, toadd_bits, oldblock, blockbegin, from_bytes(self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 32 + 2]), depth + 1)
+                if r == DONE:
+                    return DONE
+                if p != 0:
+                    self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 32 + 2] = to_bytes(p, 2)
+                if self.memory[blockbegin + pos + 1:blockbegin + pos + 1 + 32] == INVALID:
+                    return DONE, 0
+                self.memory[blockbegin + pos + 1:blockbegin + pos + 1 + 32] = INVALID
+                return INVALIDATING, 0
+            else:
+                oldval = self.memory[blockbegin + pos + 1 + 32:blockbegin + pos + 1 + 64]
+                newfirst = from_bytes(self.memory[blockbegin:blockbegin + 2])
+                r, newbegin = self._add_leaf_two(oldval, _to_bits(oldval), toadd, toadd_bits, oldblock, blockbegin, depth + 1, newfirst + 1 + 32 + 2 + 32 + 2)
+                if r == DONE:
+                    return DONE
+                self.memory[newfirst:newfirst + 1] = MIDDLE
+                self.memory[newfirst + 1:newfirst + 1 + 32] = INVALID
+                self.memory[newfirst + 1 + 32:newfirst + 1 + 32 + 2] = to_bytes(p, 2)
+                self.memory[newfirst + 1 + 32 + 2:newfirst + 1 + 32 + 2 + 32 + 2] = self.memory[blockbegin + pos + 1:blockbegin + pos + 1 + 32 + 2]
+                self.memory[blockbegin:blockbegin + 2] = to_bytes(newbegin, 2)
+                return INVALIDATING, newfirst
+        elif t == TERMBOTH:
+            booga booga
+        else:
+            raise IntegrityError()
 
     # returns state, newpos
     # state can be INVALIDATING, DONE
-    def _add_leaf_two(self, oldval, toadd, toadd_bits, oldblock, blockbegin, pos, depth):
+    def _add_leaf_two(self, oldval, oldbits, toadd, toadd_bits, oldblock, blockbegin, depth, newfirst):
+        s = ''
+        while oldbits[depth] == toadd_bits[depth]:
+            s += (ONLY0 if oldbits[depth] == 0 else ONLY1) + INVALID + to_bytes(newfirst + len(s) + 1 + 32 + 2, 2)
+            depth += 1
+        if oldbits[depth] == 0:
+            s += TERMBOTH + oldval + toadd
+        else:
+            s += TERMBOTH + toadd + oldval
+        if newfirst + len(s) > self.block_size:
+            self._rework_leaf(oldblock, blockbegin // self.block_size)
+            self.add(oldval)
+            return DONE, 0
+        self.memory[blockbegin + newfirst:blockbegin + newfirst + len(s)] = s
+        self.memory[blockbegin:blockbegin + 2] = to_bytes(newfirst, 2)
+        return INVALIDATING, newfirst
+
+    def _rework_leaf(self, parent, child):
         booga booga
 
     def remove(self, toremove):
