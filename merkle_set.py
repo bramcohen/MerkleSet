@@ -1,103 +1,89 @@
 from hashlib import sha256
+from blake2 import blake2
+from binascii import b2a_hex
 
-def hasher(mystr, safe = True):
-    if safe:
-        assert len(mystr) == 63
-    return sha256(mystr).digest()[:-1]
+def hasher(mystr):
+    # It also may be faster to change the metadata bits so only 32 bytes need 
+    # to be hashed if one of the children is missing
+    assert len(mystr) == 64
+    return b2a_hex(blake2(mystr, hashSize = 32))
+
+def shahash(mystr):
+    return sha256(mystr).digest()
+
+from_bytes = int.from_bytes
+to_bytes = int.to_bytes
+
+__all__ = ['confirm_included', 'confirm_included_already_hashed', 'confirm_not_included', 
+        'confirm_not_included_already_hashed', 'MerkleSet']
 
 """
 Advantages of this merkle tree implementation:
 Lazy root calculation
 Few l1 and l2 cache misses
+Low CPU requirements
+Good memory efficiency
+Good interaction with normal memory allocators
 Small proofs of inclusion/exclusion
 Reasonably simple implementation
-Reasonably efficient in memory
 Reasonable defense against malicious insertion attacks
 
 TODO: Port to C
-TODO: Switch to non-padding variant of sha256
 TODO: Optimize! Benchmark!
+TODO: Address Blake2 subtleties
+TODO: Make sure that data structures don't get garbled on an out of memory error
 TODO: add multi-threading support
 TODO: add support for continuous self-auditing
 TODO: Try heuristically calculating hashes non-lazily when they're likely to be needed later
 TODO: Try unrolling all this recursivity to improve performance
 
-
 # all unused should be zeroed out
 branch: active_child 8 patricia[size]
-patricia[n]: type 1 hash 31 hash 31 patricia[n-1] patricia[n-1]
-# pos 0xFFFF means child is a branch
-patricia[0]: block 8 pos 2
-type: ONLY0 or ONLY1 or TERM0 or TERM1 or TERMBOTH or MIDDLE or NOTHING
+patricia[n]: modified_hash 32 modified_hash 32 patricia[n-1] patricia[n-1]
+# unused are zeroed out
+patricia[0]: child 8 pos 2
+# modified_hash[0] & 0xC0 is the type
+type: EMPTY or TERMINAL or MIDDLE or INVALID
 
 # first_unused is the start of linked list, 0xFFFF for terminal
 leaf: first_unused 2 num_inputs 2 [node or emptynode]
-node: type 1 hash0 31 hash1 31 pos0 2 pos1 2
-type: MIDDLE or ONLY0 or ONLY1 or TERM0 or TERM1 or TERMBOTH or NOTHING
-emptynode: NOTHING 1 next 2
+node: modified_hash 32 modified_hash 32 pos0 2 pos1 2
+emptynode: next 2 unused 66
 
-# EMPTY always has proofs of length 0
-inclusion_proof: [unit]
-unit: only0 or only1 or term0 or term1 or bothterm or middle or singular
-only0: ONLY0 1
-only1: ONLY1 1
-term0: TERM0 1 hash 31
-term1: TERM1 1 hash 31
-bothterm: TERMBOTH 1 hash 31
-middle: MIDDLE 1 hash 31
-singular: SINGULAR 1
-
-# EMPTY always has proofs of length 0
-exclusion_proof: [unit]
-unit: only0 or only1 or term0 or term1 or bothterm or middle or singular
-only0: ONLY0 1 (hash 31)
-only1: ONLY1 1 (hash 31)
-term0: TERM0 1 hash 31 (hash 31)
-term1: TERM1 1 hash 31 (hash 31)
-bothterm: TERMBOTH 1 hash 31 hash 31
-middle: MIDDLE 1 hash 31
-singular: SINGULAR 1 hash 31
-
-bits for type:
-0 invalid, 1 invalid, unused, singular, branch in 0, terminal in 0, branch in 1, terminal in 1
+# empty and singleton always have proofs of length 0
+clusion_proof: [unit]
+unit: give0 or give1 or empty0 or empty1 or giveboth
+give0: GIVE0 1 modified_hash 32
+give1: GIVE1 1 modified_hash 32
+empty0: EMPTY0 1
+empty1: EMPTY1 1
+giveboth: GIVEBOTH 1 modified_hash 32 modified_hash 32
 """
 
-EMPTY = bytes([0]) * 31
-INVALID = bytes([1]) * 31
+EMPTY = 0
+TERMINAL = 0x40
+MIDDLE = 0x80
+INVALID = TERMINAL | MIDDLE
 
-TERMNODE = bytes([0xFF, 0xFF])
+GIVE0 = 0
+GIVE1 = 1
+GIVEBOTH = 2
+EMPTY0 = 3
+EMPTY1 = 4
 
-INVALID0 = 0x80
-INVALID1 = 0x40
-SINGULAR = 0x10
-BRANCH0 = 0x08
-END0 = 0x04
-BRANCH1 = 0x02
-END1 = 0x01
-
-MIDDLE = BRANCH0 | BRANCH1
-ONLY0 = BRANCH0
-ONLY1 = BRANCH1
-TERM0 = END0 | BRANCH1
-TERM1 = BRANCH0 | END1
-TERMBOTH = END0 | END1
-NOTHING = 0
-
-Maybe = 2
-
-NOTSTARTED = 0
-ONELEFT = 1
-INVALIDATING = 2
-DONE = 3
-FAILED = 4
-NEWPOS = 5
+NOTSTARTED = 2
+ONELEFT = 3
+INVALIDATING = 4
+DONE = 5
+FULL = 6
 
 def confirm_included(root, val, proof):
-    return confirm_included_already_hashed(root, hasher(val, False), proof)
+    return confirm_included_already_hashed(root, shahash(val), proof)
 
 def confirm_included_already_hashed(root, val, proof):
     assert len(root) == 31
-    assert len(val) == 31
+    assert len(val) == 32
+    val = val[:-1]
     if root == EMPTY:
         return False
     if proof == SINGULAR:
@@ -192,11 +178,12 @@ def _confirm_included(depth, proof, pos, val):
         return False, None
 
 def confirm_not_included(root, val, proof):
-    return confirm_included_already_hashed(root, hasher(val, False), proof)
+    return confirm_included_already_hashed(root, shahash(val), proof)
 
 def confirm_not_included_already_hashed(root, val, proof):
     assert len(root) == 31
-    assert len(val) == 31
+    assert len(val) == 32
+    val = val[:-1]
     if root == EMPTY:
         return len(proof) == 0
     if len(proof) > 0 and proof[0:1] == SINGULAR:
@@ -309,7 +296,7 @@ class MerkleSet:
         # should be dumped completely on a port to C in favor of real dereferencing.
         self.pointers_to_arrays = {}
         self.spare_leaf = None
-        self.rootblock = self._allocate_branch()
+        self.rootblock = None
 
     def _allocate_branch(self):
         b = bytearray(self.blocksize)
@@ -323,7 +310,7 @@ class MerkleSet:
         assert len(ref) == 8
         if ref == bytes(8):
             return None
-         return self.pointers_to_arrays[ref]
+        return self.pointers_to_arrays[ref]
 
     def _deref_branch(self, branch):
         if branch is None:
@@ -345,9 +332,12 @@ class MerkleSet:
         return leaf
 
     def _deallocate_leaf(self, leaf):
-        del self.pointers_to_arrays[self._deref_leaf(leaf), 6)]
+        del self.pointers_to_arrays[self._deref_leaf(leaf)]
 
     def _ref_leaf(self, ref):
+        assert len(ref) == 8
+        if ref == bytes(8):
+            return None
         return self.pointers_to_arrays[ref]
 
     def _deref_leaf(self, leaf):
@@ -357,7 +347,7 @@ class MerkleSet:
         if self.size == 0:
             return EMPTY
         if self.size == 1:
-            return hasher(self.root)
+            return hasher(SINGULAR + self.root + self.root)
         if self.root == INVALID:
             self.root = self._force_calculation(self.rootblock + 5, len(self.subblock_lengths)-1)
         return self.root
@@ -400,15 +390,16 @@ class MerkleSet:
         return hasher(p[:1 + 62])
 
     def add(self, toadd):
-        return self.add_already_hashed(hasher(toadd, False))
+        return self.add_already_hashed(shahash(toadd))
 
     def add_already_hashed(self, toadd):
-        assert len(toadd) == 31
+        assert len(toadd) == 32
+        toadd = toadd[:-1]
         if self.size == 0:
             self.root = toadd
             self.size = 1
         elif self.size == 1:
-            allocate root branch
+            self.rootblock = self._allocate_branch()
             self._insert_branch_two(self.root, toadd, 0, 4, 0, len(self.subblock_lengths) - 1)
             self.root = INVALID
         else:
@@ -473,7 +464,7 @@ class MerkleSet:
                 if r == DONE:
                     return DONE
                 else:
-                    assert r == INVALIDATING:
+                    assert r == INVALIDATING
                     self.memory[pos:pos + 1] = MIDDLE
                     self.memory[pos + 1:pos + 1 + 32] = INVALID
                     return INVALIDATING
@@ -484,7 +475,7 @@ class MerkleSet:
                 if r == DONE:
                     return DONE
                 else:
-                    assert r == INVALIDATING:
+                    assert r == INVALIDATING
                     self.memory[pos:pos + 1] = TERM1
                     self.memory[pos + 1:pos + 1 + 32] = INVALID
                     return INVALIDATING
@@ -512,7 +503,7 @@ class MerkleSet:
                 if r == DONE:
                     return DONE
                 else:
-                    assert r == INVALIDATING:
+                    assert r == INVALIDATING
                     self.memory[pos:pos + 1] = MIDDLE
                     self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
                     return INVALIDATING
@@ -523,54 +514,37 @@ class MerkleSet:
                 if r == DONE:
                     return DONE
                 else:
-                    assert r == INVALIDATING:
+                    assert r == INVALIDATING
                     self.memory[pos:pos + 1] = TERM0
                     self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
                     return INVALIDATING
             else:
                 assert False
 
+    # returns INVALIDATING
     def _insert_branch_three(self, things, block, pos, depth, moddepth):
         if moddepth == 0:
-            blockbegin = block * self.block_size
-            active_child = from_bytes(self.memory[blockbegin:blockbegin + 4])
-            if active_child == 0:
-                new_child = self.first_unused
-                if new_child == 0:
-                    raise OutOfMemoryError()
-                self.memory[blockbegin:blockbegin + 4] = to_bytes(new_child, 4)
-                newbegin = new_child * self.block_size
-                self.first_unused = from_bytes(self.memory[newbegin:newbegin + 4])
-                self.memory[newbegin:newbegin + 2] = to_bytes(4, 2)
-                self.memory[newbegin + 2:newbegin + 4] = to_bytes(0, 2)
-            else:
-                newbegin = active_child * self.block_size
-            result, newpos = self._add_leaf_two(old, oldbits, toadd, toadd_bits, block, newbegin, depth, from_bytes(self.memory[newbegin:newbegin + 2]))
-            if result == DONE:
-                return DONE
-            self.memory[newbegin + 2:newbegin + 4] = to_bytes(from_bytes(self.memory[newbegin + 2:newbegin + 4]) + 1, 2)
-            self.memory[pos:pos + 4] = to_bytes(active_child)
-            self.memory[pos + 4:pos + 6] = to_bytes(newpos)
-        if self.memory[pos:pos + 1] != NOTHING:
-            raise IntegrityError()
-        if oldbits[depth] != toadd_bits[depth]:
-            self.memory[pos:pos + 1] = TERMBOTH
-            if oldbits[depth] == 0:
-                self.memory[pos + 1:pos + 1 + 32] = old
-                self.memory[pos + 1 + 32:pos + 1 + 64] = toadd
-            else:
-                self.memory[pos + 1:pos + 1 + 32] = toadd
-                self.memory[pos + 1 + 32:pos + 1 + 64] = old
+            self._insert_leaf_three(things, block, pos, depth)
             return INVALIDATING
-        newpos = pos + 1 + 64
-        if oldbits[depth] == 1:
-            newpos += self.subblock_lengths[moddepth - 1]
-        return self._add_branch_two_inner(self, old, oldbits, toadd, toadd_bits, block, newpos, depth + 1, moddepth - 1)
+        assert pos nulled out
+        if all bits are the same:
+            put data in block
+            newpos = booga booga
+            self._insert_branch_three(things, block, newpos, depth + 1, moddepth - 1)
+        else:
+            put data in block
+            newpos = booga booga
+            self._insert_branch_two(newthings, block, newpos, depth + 1, moddepth - 1)
+        return INVALIDATING
 
-    def _insert_branch_two(self, thing1, thing2, block, pos, depth, moddepth):
+    # returns INVALIDATING
+    def _insert_branch_two(self, things, block, pos, depth, moddepth):
         if moddepth == 0:
-            call _insert_leaf_two
-        insert directly
+            if necessary, make a new active child
+            self._insert_leaf_two(things, active child, beginning)
+            return INVALIDATING
+        insert TERMBOTH directly
+        return INVALIDATING
 
     def _delete_section_from_leaf(self, leaf, pos):
         if there is anything below in high bit:
@@ -602,29 +576,30 @@ class MerkleSet:
                 return False
         return True
 
-    # returns state, memblock, pos
-    # state can be INVALIDATING, DONE, NEWPOS
-    def _add_to_leaf(self, toadd, branch, leaf, pos, depth):
+    # state can be INVALIDATING, DONE
+    def _add_to_leaf(self, toadd, branch, branchpos, leaf, pos, depth):
         booga call _add_to_leaf_inner
-        if not failed:
+        if not FULL:
             return result of inner call
         if only one thing in leaf:
-            copy into branch
-            add to branch
-            return NEWPOS
+            copy into new branch
+            update branch
+            add to new branch
+            return INVALIDATING
         if leaf is not active_child and there is an active_child:
             copy into active_child
-            if not failed:
+            if not FULL:
                 delete old copy
                 call _add_to_leaf
-                return NEWPOS
+                return INVALIDATING
         make a new active_child
         copy into new active_child
         assert did not fail
         delete old copy
-        return NEWPOS
+        call _add_to_leaf
+        return INVALIDATING
 
-    # returns INVALIDATING, DONE, FAILED
+    # returns INVALIDATING, DONE, FULL
     def _add_to_leaf_inner(self, toadd, leaf, pos, depth):
         if the next bit of toadd is lower:
             if the next thing is empty:
@@ -638,7 +613,7 @@ class MerkleSet:
                 if next thing is the same as toadd:
                     return DONE
                 result = self._insert_leaf_two(toadd and other value):
-                if result != FAILED:
+                if result != FULL:
                     increase size by 1
             if not invalid and result == INVALIDATING:
                 mark invalid
@@ -655,7 +630,7 @@ class MerkleSet:
                 if next thing is the same as toadd:
                     return DONE
                 result = self._insert_leaf_two(toadd and other value):
-                if result != FAILED:
+                if result != FULL:
                     increase size by 1
             if not invalid and result == INVALIDATING:
                 mark invalid
@@ -684,43 +659,76 @@ class MerkleSet:
         if there is anything in the 1 position:
             self._move_leaf_to_branch_inner(1 position)
 
-    # returns INVALIDATING, FAILED
-    def _insert_leaf_three(self, thinga, thingb, thingc, leaf, depth):
-        if firstpos is bad:
-            return FAILED
-        mypos = firstpos
-        set firstpos to mypos next
+    # returns INVALIDATING
+    def _insert_leaf_three(self, things, branch, branchpos, depth):
+        assert branch data are nulled out
+        if there is no active child:
+            make new active child
+        pos = active child first pos
+        result = self._insert_leaf_three_inner(things, active child, pos, depth)
+        if result != INVALIDATING:
+            make a new active child
+            pos = active first pos
+            result, pos = self._insert_leaf_three_inner(things, active child, pos, depth)
+            assert result == INVALIDATING
+        increase inputs by one
+        insert at branchpos active_child, pos
+        return INVALIDATING
+
+    # returns INVALIDATING
+    def _insert_leaf_two(self, things, branch, branchpos):
+        assert branch data are nulled out
+        if there is no active child:
+            make a new active child
+        pos = active first pos
+        result = self._insert_leaf_two_inner(things, active child, pos)
+        if result != INVALIDATING:
+            make a new active child
+            pos = active first pos
+            result = self._insert_leaf_two_inner(booga booga)
+            assert result == INVALIDATING
+        increase inputs by one
+        insert at branchpos active_child, pos
+        return INVALIDATING
+
+    # returns INVALIDATING, FULL
+    def _insert_leaf_three_inner(self, things, leaf, pos, depth):
+        if pos is bad:
+            return FULL
+        nextpos = nextpointer from pos
         if all three next bits are the same:
+            result, newpos = self._insert_leaf_three(things, leaf, nextpos, depth + 1)
+            if result == FULL:
+                return FULL
             if bits are zero:
                 insert with empty in 1 to mypos
             else:
                 insert with empty in 0 to mypos
-            result = self._insert_leaf_three(thinga, thingb, thingc, leaf, depth + 1)
+            return INVALIDATING
         else:
+            result = self._insert_leaf_two_inner(remaining things, leaf, nextpos, depth + 1)
+            if result == FULL:
+                return FULL
             if there are two in the zero:
                 insert with terminal in 1
             else:
                 insert with terminal in 0
-            result = self._insert_leaf_two(remaining things)
-        if result == FAILED:
-            replace mypos with pointer to firstpos
-            set firstpos to mypos
-        return result
+            return INVALIDATING
 
-    # returns INVALIDATING, FAILED
-    def _insert_leaf_two(self, things, leaf, pos):
-        if firstpos is bad:
-            return FAILED
-        mypos = firstpos
-        set firstpos to mypos next
-        insert BOTHTERM into mypos
+    # returns INVALIDATING, FULL
+    def _insert_leaf_two_inner(self, things, leaf, pos):
+        if pos is bad:
+            return FULL
+        set nextpos in leaf to next link after pos
+        insert BOTHTERM into pos
         return INVALIDATING
 
     def remove(self, toremove):
-        return self.remove_already_hashed(hasher(toadd))
+        return self.remove_already_hashed(shahash(toremove))
 
     def remove_already_hashed(self, toremove):
-        assert len(toremove) == 31
+        assert len(toremove) == 32
+        toremove = toremove[:-1]
         if self.root == EMPTY:
             return
         if self.size == 1:
@@ -740,7 +748,9 @@ class MerkleSet:
         else:
             assert False
 
-    def _remove_branch(self, toremove, block, depth):
+    # returns (status, oneval)
+    # status can be ONELEFT, INVALIDATING, DONE
+    def _remove_branch(self, toremove, block, pos, depth):
         result, val = self._remove_branch_inner(my vals)
         assert result != NOTSTARTED
         if result == ONELEFT:
@@ -751,122 +761,91 @@ class MerkleSet:
     # status can be NOTSTARTED, ONELEFT, INVALIDATING, DONE
     def _remove_branch_inner(self, toremove, pos, depth, moddepth):
         if moddepth == 0:
-            if pos is bad:
-                return _remove_branch
-            return self._remove_outside_leaf(toremove, toremove_bits, pos, depth)
-        if moddepth == 1:
-            t = sef.memory[pos:pos + 1]
-            if t == NOTHING:
+            if outpointer is to nothing:
                 return NOTSTARTED, None
-        if toremove_bits[depth] == 0:
-            state, oneval = self._remove_branch(toremove, toremove_bits, pos + 1 + 64, depth + 1, moddepth - 1)
+            if pos is bad:
+                r, val = booga _remove_branch
+            else:
+                r, val = self._remove_leaf(toremove, toremove_bits, pos, depth)
+            if r == ONELEFT:
+                zero out at pos
+            return (r, val)
+        was_invalid = invalid 0 bit or invalid 1 bit
+        if next bit == 0:
+            state, oneval = remove from 0 pos
+            if state == DONE:
+                return DONE, None
+            elif state == INVALIDATING:
+                if 0 invalid bit is not set:
+                    set 0 invalid bit
+            elif state == NOTSTARTED:
+                if there is nothing at the current pos:
+                    return NOTSTARTED, None
+                assert terminal in 0
+                if thing in 0 is toremove:
+                    self.size -= 1
+                    if terminal in 1:
+                        oneval = thing in 1
+                        zero out data
+                        return ONELEFT, oneval
+                    mark 0 as not terminal, valid, zero out
+                    c = collapse down 1
+                    if c is not None:
+                        overwrite with c
+                        mark both valid and terminal
+                elif terminal in 1 and thing in 1 is toremove:
+                    self.size -= 1
+                    oneval = thing in 0
+                    zero out data
+                    return ONELEFT, oneval
+                else:
+                    return DONE, None
+            else:
+                assert state == ONELEFT
+                if 1 pos is not terminal or branch:
+                    zero out data
+                    return ONELEFT, oneval
+                put oneval into 0 pos
+                mark 0 pos as terminal, not branch, valid
         else:
-            state, oneval = self._remove_branch(toremove, toremove_bits, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
-        if state == DONE:
-            return DONE, None
-        if state == INVALIDATING:
-            if toremove_bits[depth] == 0:
-                ipos = pos + 1
-            else:
-                ipos + pos + 1 + 32
-            if self.memory[ipos:ipos + 32] == INVALID:
+            state, oneval = remove from 1 pos
+            if state == DONE:
                 return DONE, None
-            else:
-                self.memory[ipos:ipos + 32] = INVALID
-                return INVALIDATING, None
-        t = self.memory[pos:pos + 1]
-        if t == NOTHING:
-            return NOTSTARTED
-        elif t == MIDDLE:
-            if state != ONELEFT:
-                raise IntegrityError()
-            if toremove_bits[depth] == 0:
-                self.memory[pos:pos + 1] = TERM0
-                self.memory[pos + 1:pos + 1 + 32] = oneval
-                return INVALIDATING, None
-            else:
-                self.memory[pos:pos + 1] = TERM1
-                self.memory[pos + 1 + 32:pos + 1 + 64] = oneval
-                return INVALIDATING, None
-        elif t == ONLY0:
-            if toremove_bits[depth] == 0:
-                if state != ONELEFT:
-                    raise IntegrityError()
-                self.memory[pos:pos + 1] = NOTHING
-                self.memory[pos + 1:pos + 1 + 32] = bytes(32)
-                return ONELEFT, oneval
-            else:
-                if state != NOTSTARTED:
-                    raise IntegrityError()
-                return DONE, None
-        elif t == ONLY1:
-            if toremove_bits[depth] == 0:
-                if state != NOTSTARTED:
-                    raise IntegrityError()
-                return DONE, None
-            else:
-                if state != ONELEFT:
-                    raise IntegrityError()
-                self.memory[pos:pos + 1] = NOTHING
-                self.memory[pos + 1 + 32:pos + 1 + 64] = bytes(32)
-                return ONELEFT, oneval
-        elif t == TERM0:
-            if toremove_bits[depth] == 0:
-                if state != NOTSTARTED:
-                    raise IntegrityError()
-                if self.memory[pos + 1:pos + 1 + 32] == toremove:
-                    self.memory[pos:pos + 1] = ONLY1
-                    self.memory[pos + 1:pos + 1 + 32] = bytes(32)
+            elif state == INVALIDATING:
+                if 1 invalid bit is not set:
+                    set 1 invalid bit
+            elif state == NOTSTARTED:
+                if there is nothing at the current pos:
+                    return NOTSTARTED, None
+                assert terminal in 1
+                if thing in 1 is toremove:
                     self.size -= 1
-                    return INVALIDATING, None
+                    if terminal in 0:
+                        oneval = thing in 0
+                        zero out data
+                        return ONELEFT, oneval
+                    mark 1 as not terminal, valid, zero out
+                    c = collapse down 0
+                    if c is not None:
+                        overwrite with c
+                        mark both valid and terminal
+                elif terminal in 0 and thing in 0 is toremove:
+                    self.size -= 1
+                    oneval = thing in 1
+                    zero out data
+                    return ONELEFT, oneval
                 else:
                     return DONE, None
             else:
-                if state != ONELEFT:
-                    raise IntegrityError()
-                self.memory[pos:pos + 1] = TERMBOTH
-                self.memory[pos + 1 + 32:pos + 1 + 64] = oneval
-                return INVALIDATING, None
-        elif t == TERM1:
-            if toremove_bits[depth] == 0:
-                if state != ONELEFT:
-                    raies IntegrityError()
-                self.memory[pos:pos + 1] = TERMBOTH
-                self.memory[pos + 1:pos + 1 + 32] = oneval
-                return INVALIDATING, None
-            else:
-                if state != NOTSTARTED:
-                    raise IntegrityError()
-                if self.memory[pos + 1 + 32:pos + 1 + 64] == toremove:
-                    self.memory[pos:pos + 1] = ONLY0
-                    self.memory[pos + 1 + 32:pos + 1 + 64] = bytes(32)
-                    self.size -= 1
-                    return INVALIDATING, None
-                else:
-                    return DONE, None
-        elif t == TERMBOTH:
-            if state != NOTSTARTED:
-                raise IntegrityError()
-            if toremove_bits[depth] == 0:
-                if self.memory[pos + 1:pos + 1 + 32] == toremove:
-                    self.memory[pos:pos + 1] = NOTHING
-                    left = self.memory[pos + 1 + 32:pos + 1 + 64]
-                    self.memory[pos + 1:pos + 1 + 64] = bytes(64)
-                    self.size -= 1
-                    return ONELEFT, left
-                else:
-                    return DONE, None
-            else:
-                if self.memory[pos + 1 + 32:pos + 1 + 64] == toremove:
-                    self.memory[pos:pos + 1] = NOTHING
-                    left = self.memory[pos + 1:pos + 1 + 32]
-                    self.memory[pos + 1:pos + 1 + 64] = bytes(64)
-                    self.size -= 1
-                    return ONELEFT, left
-                else:
-                    return DONE, None
-        else:
-            raise IntegrityError()
+                assert state == ONELEFT
+                if 0 pos is not terminal or branch:
+                    zero out data
+                    return ONELEFT, oneval
+                put oneval into 1 pos
+                mark 1 pos as terminal, not branch, valid
+        if not was_invalid:
+            return INVALIDATING, None
+        return DONE, None
 
     # returns (status, oneval)
     # status can be ONELEFT, INVALIDATING, DONE
@@ -884,7 +863,7 @@ class MerkleSet:
                 return DONE
             if terminal in 0 position:
                 if 0 val is toremove:
-                    v = _collapse_leaf_two
+                    v = _collapse_leaf
                     if v is not None:
                         set pos to v
                     self.size -= 1
@@ -897,7 +876,7 @@ class MerkleSet:
                 return DONE
             if terminal in 1 position:
                 if 1 val is toremove:
-                    v = _collapse_leaf_two
+                    v = _collapse_leaf
                     if v is not None:
                         set pos to v
                     self.size -= 1
@@ -906,22 +885,45 @@ class MerkleSet:
                     retun DONE
             call _remove_leaf_inner on next depth
 
-    # returns BOTHTERM string on None
-    def _collapse_leaf_two(self, block, pos):
+    # returns BOTHTERM string or None
+    def _collapse_branch_inner(self, block, pos, moddepth):
+        if moddepth == 0:
+            if next is branch:
+                r = collapse branch
+                if r is not None:
+                    deallocate branch
+                    zero out data
+            else:
+                r = collapse leaf
+                if r is not None:
+                    deallocate leaf
+                    zero out data
+            return r
+        if both terminal:
+            r = my data
+        elif nothing in 0:
+            r = collapse branch in 1
+        elif nothing in 1:
+            r = collapse branch in 0
+        else:
+            return None
+        if r is not None:
+            zero out data
+        return r
+
+    # returns BOTHTERM string or None
+    def _collapse_leaf(self, block, pos):
         if bothterm:
-            x = my string
+            result = my string
+        elif nothing in 0 position:
+            result = _collapse_leaf in 1
+        elif nothing in 1 position:
+            result = collapse leaf in 0
+        else:
+            return None
+        if result is not None:
             deallocate pos
-            return x
-        if nothing in 0 position:
-            result = _collapse_leaf_two on upper position
-            if result is not None:
-                deallocate pos
-            return result
-        if nothing in 1 position:
-            result = _collapse_leaf_two on lower position
-            if result is not None:
-                deallocate pos
-            return result
+        return result
 
     def _allocate_in_leaf(self, block):
         next = firstpos
@@ -936,7 +938,7 @@ class MerkleSet:
         set firstpos to next
 
     def batch_add_and_remove(self, toadd, toremove):
-        self.batch_add_and_remove_already_hashed({hasher(x) for x in toadd}, {hasher(x) for x in toremove})
+        self.batch_add_and_remove_already_hashed({shahash(x) for x in toadd}, {shahash(x) for x in toremove})
 
     def batch_add_and_remove_already_hashed(self, toadd, toremove):
         toadd = sorted(toadd)
@@ -944,10 +946,10 @@ class MerkleSet:
         addpos = 0
         removepos = 0
         while addpos < len(toadd) or removepos < len(toremove):
-            while addpos < len(toadd) and toadd[addpos] < toremove[removepos]:
+            while addpos < len(toadd) and (removepos == len(toremove) or toadd[addpos] < toremove[removepos]):
                 self.add_already_hashed(toadd[addpos])
                 addpos += 1
-            while removepos < len(toremove) and toremove(removepos) < toadd[addpos]:
+            while removepos < len(toremove) and (addpos == len(toadd) or toremove(removepos) < toadd[addpos]):
                 self.remove_already_hashed(toremove[removepos])
                 removepos += 1
             if addpos < len(toadd) and removepos < len(toremove) and toadd[addpos] == toremove[removepos]:
@@ -957,22 +959,28 @@ class MerkleSet:
                 while removepos < len(toremove) and toremove[removepos] == lastval:
                     removepos += 1
 
+    # returns (boolean, proof string)
     def is_included(self, tocheck):
-        return self.is_included_already_hashed(hasher(tocheck))
+        return self.is_included_already_hashed(shahash(tocheck))
 
+    # returns (boolean, proof string)
     def is_included_already_hashed(self, tocheck):
-        assert len(mystr) == 31
+        assert len(tocheck) == 32
+        tocheck = tocheck[:-1]
         return self._is_included_outer(tocheck, None)
 
+    # returns (boolean, proof string)
     def is_included_make_proof(self, tocheck):
-        return self.is_included_make_proof_already_hashed(hasher(tocheck, False))
+        return self.is_included_make_proof_already_hashed(shahash(tocheck))
 
+    # returns (boolean, proof string)
     def is_included_make_proof_already_hashed(self, tocheck):
         assert len(tocheck) == 32
         buf = []
         r = return self._is_included(tocheck, buf)
         return r, b''.join(buf)
 
+    # returns boolean
     def _is_included_outer(self, tocheck, buf):
         self.get_root()
         if self.size == 0:
@@ -988,6 +996,7 @@ class MerkleSet:
                 return False
         return self._is_included(tocheck, _to_bits(tocheck), 5, 0, len(self.subblock_lengths)-1, None, buf)
 
+    # returns True, False, NOTSTARTED
     def _is_included(self, tocheck, tocheck_bits, pos, depth, moddepth, buf):
         if moddepth == 0:
             bnum = from_bytes(self.memory[pos:pos + 4])
@@ -1004,12 +1013,12 @@ class MerkleSet:
                 buf.append(x)
         if buf is None and moddepth > 1:
             v = self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-            if v != Maybe:
+            if v != NOTSTARTED:
                 return v
         t = self.memory[pos:pos + 1]
         b(t)
         if t == NOTHING:
-            return Maybe
+            return NOTSTARTED
         elif t == MIDDLE:
             if tocheck_bits[depth] == 1:
                 b(self.memory[pos + 1:pos + 1 + 32])
