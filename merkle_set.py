@@ -26,6 +26,7 @@ TODO: add multi-threading support
 TODO: add support for continuous self-auditing
 TODO: Try heuristically calculating hashes non-lazily when they're likely to be needed later
 TODO: Try unrolling all this recursivity to improve performance
+TODO: Maybe add a size counter
 
 # all unused should be zeroed out
 branch: active_child 8 patricia[size]
@@ -249,9 +250,6 @@ class MerkleSet:
             return bytes(8)
         return to_bytes(id(thing), 8)
 
-    def _leafpos(self, pos):
-        return 4 + i * 68
-
     def get_root(self):
         if get_type(self.root, 0) == INVALID:
             self.root = self._force_calculation_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
@@ -272,10 +270,11 @@ class MerkleSet:
         return hasher(block[pos:pos + 64])
 
     def _force_calculation_leaf(self, block, pos):
+        pos = 4 + pos * 68
         if get_type(block, pos) == INVALID:
-            block[pos:pos + 32] = self._force_calculation_leaf(block, self._leafpos(from_bytes(block[pos + 64:pos + 66])))
+            block[pos:pos + 32] = self._force_calculation_leaf(block, from_bytes(block[pos + 64:pos + 66]))
         if get_type(block, pos + 32) == INVALID:
-            block[pos + 32:pos + 64] = self._force_calculation_leaf(block, self._leafpos(from_bytes(block[pos + 66:pos + 68])))
+            block[pos + 32:pos + 64] = self._force_calculation_leaf(block, from_bytes(block[pos + 66:pos + 68]))
         return hasher(block[pos:pos + 64])
 
     def add(self, toadd):
@@ -290,183 +289,130 @@ class MerkleSet:
             self.root = toadd
         elif t == TERMINAL:
             self.rootblock = self._allocate_branch()
-            self._insert_branch_two(self.root, toadd, 0, 4, 0, len(self.subblock_lengths) - 1)
+            self._insert_branch([self.root, toadd], self.rootblock, 8, 0, len(self.subblock_lengths) - 1)
             make_invalid(self.root, 0)
         else:
-            if self._add_to_branch(toadd, _to_bits(toadd), 0, 4, 0, len(self.subblock_lengths) - 1) == INVALIDATING:
+            if self._add_to_branch(toadd, self.rootblock, 0) == INVALIDATING:
                 make_invalid(self.root, 0)
 
     # returns INVALIDATING, DONE
     def _add_to_branch(self, toadd, block, depth):
-        return self._add_to_branch_inner(toadd, block, 8, depth, len(self.subblock_lengths))
+        return self._add_to_branch_inner(toadd, block, 8, depth, len(self.subblock_lengths) - 1)
 
     # returns NOTSTARTED, INVALIDATING, DONE
     def _add_to_branch_inner(self, toadd, block, pos, depth, moddepth):
         if moddepth == 0:
-            newblock = from_bytes(self.memory[pos:pos + 4])
-            pos = from_bytes(self.memory[pos + 4:pos + 6])
-            if pos == 0:
-                return self._add_branch_one(toadd_bits, toadd_bits, newblock, newblock * self.block_size + 4, depth, len(self.subblock_lengths) - 1)
-            else:
-                state, oneval = self._add_leaf_one(toadd, toadd_bits, block, newblock * self.blocksize, pos, depth)
-                if oneval != 0:
-                    self.memory[pos + 4:pos + 6] = to_bytes(oneval)
-                return state
-        if moddepth == 1:
-            if self.memory[pos:pos + 1] == NOTHING:
+            nextblock = self._ref(block[pos:pos + 8])
+            if nextblock is None:
                 return NOTSTARTED
-        newpos = pos + 1 + 64
-        if toadd_bits[depth] == 1:
-            newpos += self.subblock_lengths[moddepth - 1]
-        r = self._add_branch_one(toadd, toadd_bits, block, newpos, depth + 1, moddepth - 1)
-        if r == DONE:
-            return DONE
-        elif r == INVALIDATING:
-            npos = pos + 1
-            if toadd_bits[depth] == 1:
-                npos += 32
-            if self.memory[npos:npos + 32] == INVALID:
+            nextpos = from_bytes(block[pos + 8:pos + 10])
+            if nextpos == 0xFFFF:
+                return self._add_to_branch(toadd, nextblock, depth)
+            else:
+                return self._add_to_leaf(toadd, block, pos, nextblock, nextpos, depth)
+        if get_bit(toadd, depth) == 0:
+            r = self._add_branch_inner(toadd, block, pos + 64, moddepth - 1)
+            if r == INVALIDATING:
+                if get_type(block, pos) != INVALID:
+                    make_invalid(block, pos)
+                    return INVALIDATING
                 return DONE
-            self.memory[npos:npos + 32] = INVALID
-            return INVALIDATING
-        t = self.memory[pos:pos + 1]
-        if t == NOTHING:
-            return NOTSTARTED
-        if toadd_bits[depth] == 0:
-            if t in (MIDDLE, ONLY0, TERM1):
-                r = self._add_branch_one(toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
-                if r == DONE:
-                    return DONE
-                elif r == INVALIDATING:
-                    if self.memory[pos + 1:pos + 1 + 32] == INVALID:
-                        return DONE
-                    self.memory[pos + 1:pos + 1 + 32] = INVALID
-                    return INVALIDATING
-            elif t == ONLY1:
-                self.memory[pos:pos + 1] = TERM0
-                self.memory[pos + 1:pos + 1 + 32] = toadd
+            if r == DONE:
+                return DONE
+            t0 = get_type(block, pos)
+            t1 = get_type(block, pos + 32)
+            if t0 == EMPTY:
+                if t1 == EMPTY:
+                    return NOTSTARTED
+                block[pos:pos + 32] = toadd
                 return INVALIDATING
-            elif t == TERM0:
-                if self.memory[pos + 1:pos + 1 + 32] == toadd:
+            assert t0 == TERMINAL
+            v0 = block[pos:pos + 32]
+            if v0 == toadd:
+                return DONE
+            if t1 == TERMINAL:
+                v1 = block[pos + 32:pos + 64]
+                if v1 == toadd:
                     return DONE
-                r = self._add_branch_two(self.memory[pos + 1:pos + 1 + 32], toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
-                if r == DONE:
-                    return DONE
-                else:
-                    assert r == INVALIDATING
-                    self.memory[pos:pos + 1] = MIDDLE
-                    self.memory[pos + 1:pos + 1 + 32] = INVALID
-                    return INVALIDATING
-            elif t == TERMBOTH:
-                if self.memory[pos + 1:pos + 1 + 32] == toadd:
-                    return DONE
-                r = self._add_branch_two(self.memory[pos + 1:pos + 1 + 32], toadd, toadd_bits, block, pos + 1 + 64, depth + 1, moddepth - 1)
-                if r == DONE:
-                    return DONE
-                else:
-                    assert r == INVALIDATING
-                    self.memory[pos:pos + 1] = TERM1
-                    self.memory[pos + 1:pos + 1 + 32] = INVALID
-                    return INVALIDATING
+                block[pos + 32:pos + 64] = bytes(32)
+                self._insert_branch([toadd, v0, v1], block, pos, depth, moddepth)
             else:
-                assert False
+                self._insert_branch([toadd, v0], block, pos + 64, depth + 1, moddepth - 1)
+                make_invalid(block, pos)
+            return INVALIDATING
         else:
-            if t in (MIDDLE, ONLY1, TERM0):
-                r = self._add_branch_one(toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
-                if r == DONE:
-                    return DONE
-                elif r == INVALIDATING:
-                    if self.memory[pos + 1 + 32:pos + 1 + 64] == INVALID:
-                        return DONE
-                    self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
+            r = self._add_branch_inner(toadd, block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+            if r == INVALIDATING:
+                if get_type(block, pos + 32) != INVALID:
+                    make_invalid(block, pos + 32)
                     return INVALIDATING
-            elif t == ONLY0:
-                self.memory[pos:pos + 1] = TERM1
-                self.memory[pos + 1 + 32:pos + 1 + 64] = toadd
+                return DONE
+            if r == DONE:
+                return DONE
+            t0 = get_type(block, pos)
+            t1 = get_type(block, pos + 32)
+            if t1 == EMPTY:
+                if t0 == EMPTY:
+                    return NOTSTARTED
+                block[pos + 32:pos + 64] = toadd
                 return INVALIDATING
-            elif t == TERM1:
-                if self.memory[pos + 1 + 32:pos + 1 + 64] == toadd:
+            assert t1 == TERMINAL
+            v1 = block[pos + 32:pos + 64]
+            if v1 == toadd:
+                return DONE
+            if t0 == TERMINAL:
+                v0 = block[pos:pos + 32]
+                if v0 == toadd:
                     return DONE
-                r = self._add_branch_two(self.memory[pos + 1 + 32:pos + 1 + 64], toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
-                if r == DONE:
-                    return DONE
-                else:
-                    assert r == INVALIDATING
-                    self.memory[pos:pos + 1] = MIDDLE
-                    self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
-                    return INVALIDATING
-            elif t == TERMBOTH:
-                if self.memory[pos + 1 + 32:pos + 1 + 64] == toadd:
-                    return DONE
-                r = self._add_branch_two(self.memory[pos + 1 + 32:pos + 1 + 64], toadd, toadd_bits, block, pos + 1 + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
-                if r == DONE:
-                    return DONE
-                else:
-                    assert r == INVALIDATING
-                    self.memory[pos:pos + 1] = TERM0
-                    self.memory[pos + 1 + 32:pos + 1 + 64] = INVALID
-                    return INVALIDATING
+                block[pos:pos + 32] = bytes(32)
+                self._insert_branch([toadd, v0, v1], block, pos, depth, moddepth)
             else:
-                assert False
-
-    # returns INVALIDATING
-    def _insert_branch_three(self, things, block, pos, depth, moddepth):
-        if moddepth == 0:
-            self._insert_leaf_three(things, block, pos, depth)
+                self._insert_branch([toadd, v1], block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                make_invalid(block, pos + 32)
             return INVALIDATING
-        assert pos nulled out
-        if all bits are the same:
-            put data in block
-            newpos = booga booga
-            self._insert_branch_three(things, block, newpos, depth + 1, moddepth - 1)
+
+    def _insert_branch(self, things, block, pos, depth, moddepth):
+        if moddepth == 0:
+            child = self._ref(block[:8])
+            if child is None:
+                child = self._allocate_leaf()
+                block[:8] = self._deref(child)
+            r, leafpos = self._insert_leaf(things, child, depth)
+            if r == FULL:
+                child = self._allocate_leaf()
+                block[:8] = self._deref(child)
+                r, leafpos = self._insert_leaf(things, child, depth)
+                assert r == INVALIDATING
+            child[2:4] = to_bytes(from_bytes(child[2:4]) + 1, 2)
+            block[pos:pos + 8] = self._deref(child)
+            block[pos + 8:pos + 10] = to_bytes(leafpos, 2)
+            return
+        things.sort()
+        if len(things) == 2:
+            block[pos:pos + 32] = things[0]
+            block[pos + 32:pos + 64] = things[1]
+            return
+        bits = [get_type(thing, 0) for thing in things]
+        if bits[0] == bits[1] == bits[2]:
+            if bits[0] == 0:
+                self._insert_branch(things, block, pos + 64, depth + 1, moddepth - 1)
+                make_invalid(block, pos)
+            else:
+                self._insert_branch(things, block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                make_invalid(block, pos + 32)
         else:
-            put data in block
-            newpos = booga booga
-            self._insert_branch_two(newthings, block, newpos, depth + 1, moddepth - 1)
-        return INVALIDATING
-
-    # returns INVALIDATING
-    def _insert_branch_two(self, things, block, pos, depth, moddepth):
-        if moddepth == 0:
-            if necessary, make a new active child
-            self._insert_leaf_two(things, active child, beginning)
-            return INVALIDATING
-        insert TERMBOTH directly
-        return INVALIDATING
-
-    def _delete_section_from_leaf(self, leaf, pos):
-        if there is anything below in high bit:
-            self._delete_section_from_leaf(high bit area)
-        if there is anything below in low bit:
-            self._delete_section_from_leaf(low bit area)
-        make pos cell point to firstpos
-        reset firstpos to pos
-
-    # returns whether succeeded
-    def _copy_section_between_leafs(self, from, to, pos):
-        topos = firstpos of to
-        if topos is bad:
-            return False
-        set firstpos of to to next
-        copy local branch over
-        lowpos = None
-        if there is anything below in low bit:
-            lowpos = next position
-            if not self._copy_section_between_leafs(low area):
-                reset topos cell to point to firstpos
-                set firstpos to next
-                return False
-        if there is anything below in high bit:
-            if not self._copy_section_between_leafs(high area):
-                self._delete_section_from_leaf(lowpos area)
-                reset topos cell to point to firstpos
-                set firstpos to next
-                return False
-        return True
+            if bits[0] == bits[1]:
+                block[pos + 32:pos + 64] = things[2]
+                self._insert_branch(things[:2], block, pos + 64, depth + 1, moddepth - 1)
+                make_invalid(block, pos)
+            else:
+                block[pos:pos + 32] = things[0]
+                self._insert_branch(things[1:], block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                make_invalid(block, pos + 32)
 
     # state can be INVALIDATING, DONE
     def _add_to_leaf(self, toadd, branch, branchpos, leaf, pos, depth):
-        booga call _add_to_leaf_inner
+        call _add_to_leaf_inner
         if not FULL:
             return result of inner call
         if only one thing in leaf:
@@ -500,7 +446,7 @@ class MerkleSet:
             else:
                 if next thing is the same as toadd:
                     return DONE
-                result = self._insert_leaf_two(toadd and other value):
+                result = self._insert_leaf(toadd and other value):
                 if result != FULL:
                     increase size by 1
             if not invalid and result == INVALIDATING:
@@ -517,12 +463,42 @@ class MerkleSet:
             else:
                 if next thing is the same as toadd:
                     return DONE
-                result = self._insert_leaf_two(toadd and other value):
+                result = self._insert_leaf(toadd and other value):
                 if result != FULL:
                     increase size by 1
             if not invalid and result == INVALIDATING:
                 mark invalid
             return result
+
+    # returns whether succeeded
+    def _copy_section_between_leafs(self, from, to, pos):
+        topos = firstpos of to
+        if topos is bad:
+            return False
+        set firstpos of to to next
+        copy local branch over
+        lowpos = None
+        if there is anything below in low bit:
+            lowpos = next position
+            if not self._copy_section_between_leafs(low area):
+                reset topos cell to point to firstpos
+                set firstpos to next
+                return False
+        if there is anything below in high bit:
+            if not self._copy_section_between_leafs(high area):
+                self._delete_section_from_leaf(lowpos area)
+                reset topos cell to point to firstpos
+                set firstpos to next
+                return False
+        return True
+
+    def _delete_section_from_leaf(self, leaf, pos):
+        if there is anything below in high bit:
+            self._delete_section_from_leaf(high bit area)
+        if there is anything below in low bit:
+            self._delete_section_from_leaf(low bit area)
+        make pos cell point to firstpos
+        reset firstpos to pos
 
     # returns branch
     def _move_leaf_to_branch(self, leaf, pos):
@@ -547,69 +523,50 @@ class MerkleSet:
         if there is anything in the 1 position:
             self._move_leaf_to_branch_inner(1 position)
 
-    # returns INVALIDATING
-    def _insert_leaf_three(self, things, branch, branchpos, depth):
-        assert branch data are nulled out
-        if there is no active child:
-            make new active child
-        pos = active child first pos
-        result = self._insert_leaf_three_inner(things, active child, pos, depth)
-        if result != INVALIDATING:
-            make a new active child
-            pos = active first pos
-            result, pos = self._insert_leaf_three_inner(things, active child, pos, depth)
-            assert result == INVALIDATING
-        increase inputs by one
-        insert at branchpos active_child, pos
-        return INVALIDATING
-
-    # returns INVALIDATING
-    def _insert_leaf_two(self, things, branch, branchpos):
-        assert branch data are nulled out
-        if there is no active child:
-            make a new active child
-        pos = active first pos
-        result = self._insert_leaf_two_inner(things, active child, pos)
-        if result != INVALIDATING:
-            make a new active child
-            pos = active first pos
-            result = self._insert_leaf_two_inner(booga booga)
-            assert result == INVALIDATING
-        increase inputs by one
-        insert at branchpos active_child, pos
-        return INVALIDATING
-
-    # returns INVALIDATING, FULL
-    def _insert_leaf_three_inner(self, things, leaf, pos, depth):
-        if pos is bad:
-            return FULL
-        nextpos = nextpointer from pos
-        if all three next bits are the same:
-            result, newpos = self._insert_leaf_three(things, leaf, nextpos, depth + 1)
-            if result == FULL:
-                return FULL
-            if bits are zero:
-                insert with empty in 1 to mypos
-            else:
-                insert with empty in 0 to mypos
+    # returns (INVALIDATING, FULL), pos
+    def _insert_leaf(self, things, leaf, depth):
+        pos = from_bytes(leaf[:2])
+        if pos == 0xFFFF:
+            return FULL, None
+        lpos = pos * 68 + 4
+        nextpos = from_bytes(leaf[lpos:lpos + 2])
+        leaf[:2] = to_bytes(nextpos, 2)
+        things.sort()
+        if len(things) == 2:
+            leaf[lpos:lpos + 32] = things[0]
+            leaf[lpos + 32:lpos + 64] = things[1]
             return INVALIDATING
+        bits = [get_type(thing, 0) for thing in things]
+        if bits[0] == bits[1] == bits[2]:
+            r, laterpos = self._insert_leaf(things, leaf, depth + 1)
+            if r == FULL:
+                leaf[:2] = to_bytes(pos, 2)
+                return FULL, None
+            if bits[0] == 0:
+                leaf[lpos + 64:lpos + 66] = to_bytes(laterpos, 2)
+                make_invalid(leaf, lpos)
+            else:
+                leaf[lpos + 66:lpos + 68] = to_bytes(laterpos, 2)
+                make_invalid(leaf, lpos + 32)
+                leaf[lpos:lpos + 2] = bytes(2)
+            return INVALIDATING, pos
+        elif bits[0] == bits[1]:
+            r, laterpos = self._insert_leaf([things[0], things[1]], leaf)
+            if r == FULL:
+                leaf[:2] = to_bytes(pos, 2)
+                return FULL, None
+            leaf[lpos + 32:lpos + 64] = things[2]
+            leaf[lpos + 64:lpos + 66] = to_bytes(laterpos, 2)
+            make_invalid(leaf, lpos)
         else:
-            result = self._insert_leaf_two_inner(remaining things, leaf, nextpos, depth + 1)
-            if result == FULL:
-                return FULL
-            if there are two in the zero:
-                insert with terminal in 1
-            else:
-                insert with terminal in 0
-            return INVALIDATING
-
-    # returns INVALIDATING, FULL
-    def _insert_leaf_two_inner(self, things, leaf, pos):
-        if pos is bad:
-            return FULL
-        set nextpos in leaf to next link after pos
-        insert BOTHTERM into pos
-        return INVALIDATING
+            r, laterpos = self._insert_leaf([things[1], things[2]], leaf)
+            if r == FULL:
+                leaf[:2] = to_bytes(pos, 2)
+                return FULL, None
+            leaf[lpos:lpos + 32] = things[0]
+            leaf[lpos + 66:lpos + 68] = to_bytes(laterpos, 2)
+            make_invalid(leaf, lpos + 32)
+        return INVALIDATING, pos
 
     def remove(self, toremove):
         return self._remove(shahash(toremove))
@@ -802,18 +759,6 @@ class MerkleSet:
             deallocate pos
         return result
 
-    def _allocate_in_leaf(self, block):
-        next = firstpos
-        set firstpos to nextpointer of next
-        return next
-
-    def _deallocate_in_leaf(self, block, pos):
-        next = current firstpos
-        if pos == TERMNODE:
-            return None
-        zero out pos and set next in it
-        set firstpos to next
-
     def batch_add_and_remove(self, toadd, toremove):
         self._batch_add_and_remove([shahash(x) for x in toadd], [shahash(x) for x in toremove])
 
@@ -862,159 +807,90 @@ class MerkleSet:
             return False, b''
         if t == TERMINAL:
             return tocheck == self.root, b''
-        else:
-            assert t == MIDDLE
-        r = self._is_included_inner(tocheck, 5, 0, len(self.subblock_lengths)-1, buf)
+        assert t == MIDDLE
+        r = self._is_included_branch(tocheck, self.rootblock, 8, 0, len(self.subblock_lengths) - 1, buf)
         return r, b''.join(buf)
 
-    # returns boolean
-    def _is_included_inner(self, tocheck, pos, depth, moddepth, buf):
+    # returns boolean, appends to buf
+    def _is_included_branch(self, tocheck, block, pos, depth, moddepth, buf):
         if moddepth == 0:
-            bnum = from_bytes(self.memory[pos:pos + 4])
-            bpos = from_bytes(self.memory[pos + 4:pos + 6])
-            if bpos == 0:
-                return self._is_included_inner(tocheck, tocheck_bits, bnum * self.block_size + 4, depth, len(self.subblock_lengths), buf)
+            if block[pos + 8:pos + 10] == bytearray([0xFF, 0xFF]):
+                return self._is_included_branch(tocheck, self._ref(block[pos:pos + 8]), 8, depth + 1, len(self.subblock_lengths) - 1, buf)
             else:
-                return self._is_included_leaf(tocheck, tocheck_bits, bnum * self.block_size, bpos, depth, buf)
-        newpos = pos + 65
-        if tocheck_bits[depth] == 1:
-            newpos += self.subblock_lengths[moddepth - 1]
-        def b(x):
-            if buf:
-                buf.append(x)
-        if buf is None and moddepth > 1:
-            v = self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-            if v != NOTSTARTED:
-                return v
-        t = self.memory[pos:pos + 1]
-        b(t)
-        if t == NOTHING:
-            return NOTSTARTED
-        elif t == MIDDLE:
-            if tocheck_bits[depth] == 1:
-                b(self.memory[pos + 1:pos + 1 + 32])
-            else:
-                b(self.memory[pos + 1 + 32:pos + 1 + 64])
-            return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-        elif t == ONLY0:
-            if tocheck_bits[depth] == 0:
-                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-            else:
-                b(self.memory[pos + 1:pos + 1 + 32])
+                return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), buf)
+        if block[pos:pos + 32] == tocheck:
+            buf.append(chr(GIVE1))
+            buf.append(block[pos + 32:pos + 64])
+            return True
+        if block[pos + 32:pos + 64] == tocheck:
+            buf.append(chr(GIVE0))
+            buf.append(block[pos:pos + 32])
+            return True
+        if get_bit(tocheck, depth) == 0:
+            t = get_type(block, pos)
+            if t == EMPTY:
+                buf.append(chr(EMPTY0))
+                buf.append(block[pos + 32:pos + 64])
                 return False
-        elif t == ONLY1:
-            if tocheck_bits[depth] == 0:
-                b(self.memory[pos + 1:pos + 1 + 32])
+            if t == TERMINAL:
+                buf.append(chr(GIVEBOTH))
+                buf.append(block[pos:pos + 64])
                 return False
-            else:
-                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-        elif t == TERM0:
-            if tocheck_bits[depth] == 0:
-                if self.memory[pos + 1:pos + 1 + 32] == tocheck:
-                    b(self.memory[pos + 1 + 32:pos + 1 + 64])
-                    return True
-                else:
-                    b(self.memory[pos + 1:pos + 1 + 64])
-                    return False
-            else:
-                b(self.memory[pos + 1:pos + 1 + 32])
-                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-        elif t == TERM1:
-            if tocheck_bits[depth] == 0:
-                b(self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32])
-                return self._is_included(tocheck, tocheck_bits, newpos, depth + 1, moddepth - 1, buf)
-            else:
-                if self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32] == tocheck:
-                    b(self.memory[pos + 1:pos + 1 + 32])
-                    return True
-                else:
-                    b(self.memory[pos + 1:pos + 1 + 32])
-                    b(self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32])
-                    return False
-        elif t == TERMBOTH:
-            if tocheck_bits[depth] == 0:
-                if self.memory[pos + 1:pos + 1 + 32] == tocheck:
-                    b(self.memory[pos + 1 + 32:pos + 1 + 64])
-                    return True
-                else:
-                    b(self.memory[pos + 1:pos + 1 + 64])
-                    return False
-            else:
-                if self.memory[pos + 1 + 32:pos + 1 + 64] == tocheck:
-                    b(self.memory[pos + 1:pos + 1 + 32])
-                    return True
-                else:
-                    b(self.memory[pos + 1:pos + 1 + 64])
-                    return False
+            assert t == MIDDLE
+            buf.append(chr(GIVE1))
+            buf.append(block[pos + 32:pos + 64])
+            return self._is_included_branch(tocheck, block, pos + 64, depth + 1, moddepth - 1, buf)
         else:
-            raise IntegrityError()
+            t = get_type(block, pos + 32)
+            if t == EMPTY:
+                buf.append(chr(EMPTY1))
+                buf.append(block[pos:pos + 32])
+                return False
+            if t == TERMINAL:
+                buf.append(chr(GIVEBOTH))
+                buf.append(block[pos:pos + 64])
+                return False
+            assert t == MIDDLE
+            buf.append(chr(GIVE0))
+            buf.append(block[pos:pos + 32])
+            return self._is_included_branch(tocheck, block, pos + 64 + self.subblock_lengths[moddepth], depth + 1, moddepth - 1, buf)
 
-    def _is_included_leaf(self, tocheck, tocheck_bits, block_base, pos, depth, buf = None):
-        booga booga
-        pos += block_base
-        def child(p):
-            return self._is_included_leaf(tocheck, tocheck_bits, block_base, from_bytes(self.memory[pos + p:pos + p + 2]), depth + 1, buf)
-        def b(a, b):
-            if buf:
-                buf.append(self.memory[pos + a:pos + a + b])
-        b(pos, 1)
-        t = self.memory[pos:pos + 1]
-        if t == MIDDLE:
-            if tocheck_bits[depth] == 0:
-                b(1 + 32 + 2, 32)
-                return child(33)
-            else:
-                b(1, 32)
-                return child(1)
-        elif t == ONLY0:
-            if tocheck_bits[depth] == 0:
-                return child(33)
-            else:
-                b(1, 32)
+    # returns boolean, appends to buf
+    def _is_included_leaf(self, tocheck, block, pos, depth, buf):
+        pos = 4 + pos * 68
+        if block[pos:pos + 32] == tocheck:
+            buf.append(chr(GIVE1))
+            buf.append(block[pos + 32:pos + 64])
+            return True
+        if block[pos + 32:pos + 64] == tocheck:
+            buf.append(chr(GIVE0))
+            buf.append(block[pos:pos + 32])
+            return True
+        if get_bit(tocheck, depth) == 0:
+            t = get_type(block, pos)
+            if t == EMPTY:
+                buf.append(chr(EMPTY0))
+                buf.append(block[pos + 32:pos + 64])
                 return False
-        elif t == ONLY1:
-            if tocheck_bits[depth] == 1:
-                return child(33)
-            else:
-                b(1, 32)
+            if t == TERMINAL:
+                buf.append(chr(GIVEBOTH))
+                buf.append(block[pos:pos + 64])
                 return False
-        elif t == TERM0:
-            if tocheck_bits[depth] == 0:
-                if tocheck == self.memory[pos + 1:pos + 1 + 32]:
-                    b(1 + 32, 32)
-                    return True
-                else:
-                    b(1, 64)
-                    return False
-            else:
-                b(1, 32)
-                return child(65)
-        elif t == TERM1:
-            if tocheck_bits[depth] == 0:
-                b(1 + 32 + 2, 32)
-                return child(33)
-            else:
-                if tocheck == self.memory[pos + 1 + 32 + 2:pos + 1 + 32 + 2 + 32]:
-                    b(1, 32)
-                    return True
-                else:
-                    b(1, 32)
-                    b(1 + 32 + 2, 32)
-                    return False
-        elif t == TERMBOTH:
-            if tocheck_bits[depth] == 0:
-                if tocheck == self.memory[pos + 1:pos + 1 + 32]:
-                    b(1 + 32, 32)
-                    return True
-                else:
-                    b(1, 64)
-                    return False
-            else:
-                if tocheck == self.memory[pos + 1:pos + 1 + 32]:
-                    b(1, 32)
-                    return True
-                else:
-                    b(1, 64)
-                    return False
+            assert t == MIDDLE
+            buf.append(chr(GIVE1))
+            buf.append(block[pos + 32:pos + 64])
+            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]), depth + 1, buf)
         else:
-            raise IntegrityError()
+            t = get_type(block, pos + 32)
+            if t == EMPTY:
+                buf.append(chr(EMPTY1))
+                buf.append(block[pos:pos + 32])
+                return False
+            if t == TERMINAL:
+                buf.append(chr(GIVEBOTH))
+                buf.append(block[pos:pos + 64])
+                return False
+            assert t == MIDDLE
+            buf.append(chr(GIVE0))
+            buf.append(block[pos:pos + 32])
+            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]), depth + 1, buf)
