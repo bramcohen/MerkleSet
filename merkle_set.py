@@ -73,7 +73,7 @@ ERROR = bytearray([1] * 32)
 BLANK = bytearray([0] * 32)
 
 def shahash(mystr):
-    return flip_terminal(sha256(mystr).digest())
+    return sha256(mystr).digest()
 
 def flip_terminal(mystr):
     assert len(mystr) == 32
@@ -97,7 +97,7 @@ def get_bit(mybytes, pos):
     return (mybytes[-(pos // 8) - 1] >> (pos % 8)) & 1
 
 def confirm_included(root, val, proof):
-    return _confirm_included(root, shahash(val), proof)
+    return confirm_included_already_hashed(root, shahash(val), proof)
 
 def confirm_included_already_hashed(root, val, proof):
     return _confirm_included(root, flip_terminal(val), proof)
@@ -145,7 +145,7 @@ def _find_implied_root_inclusion(depth, proof, val):
         return ERROR
 
 def confirm_not_included(root, val, proof):
-    return _confirm_included(root, shahash(val), proof)
+    return confirm_not_included_already_hashed(root, shahash(val), proof)
 
 def confirm_not_included_already_hashed(root, val, proof):
     return _confirm_included(root, flip_terminal(val), proof)
@@ -278,7 +278,7 @@ class MerkleSet:
         return hasher(block[pos:pos + 64])
 
     def add(self, toadd):
-        return self._add(shahash(toadd))
+        return self.add_already_hashed(shahash(toadd))
 
     def add_already_hashed(self, toadd):
         return self._add(flip_terminal(toadd))
@@ -411,119 +411,184 @@ class MerkleSet:
                 make_invalid(block, pos + 32)
 
     # state can be INVALIDATING, DONE
-    def _add_to_leaf(self, toadd, branch, branchpos, leaf, pos, depth):
-        call _add_to_leaf_inner
-        if not FULL:
-            return result of inner call
-        if only one thing in leaf:
-            copy into new branch
-            update branch
-            add to new branch
+    def _add_to_leaf(self, toadd, branch, branchpos, leaf, leafpos, depth):
+        r = self._add_to_leaf_inner(toadd, leaf, pos, depth)
+        if r != FULL:
+            return r
+        if from_bytes(leaf[2:4]) == 1:
+            newb = self._allocate_branch()
+            self._copy_leaf_to_branch(newb, 8, len(self.subblock_lengths) - 1, leaf, leafpos)
+            self._add_to_branch(toadd, newb, depth)
+            branch[branchpos:branchpos + 8] = self._deref(newb)
+            branch[branchpos + 8:branchpos + 10] = to_bytes(0xFFFF, 2)
+            self._deallocate(leaf)
             return INVALIDATING
-        if leaf is not active_child and there is an active_child:
-            copy into active_child
-            if not FULL:
-                delete old copy
-                call _add_to_leaf
-                return INVALIDATING
-        make a new active_child
-        copy into new active_child
-        assert did not fail
-        delete old copy
-        call _add_to_leaf
-        return INVALIDATING
+        active = self._ref(branch[:8])
+        if active is not None and active is not leaf:
+            r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+            if r == DONE:
+                self._delete_from_leaf(leaf, leafpos)
+                branch[branchpos:branchpos + 8] = self._deref(active)
+                branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
+                r = self._add_to_leaf_inner(toadd, active, newpos, depth)
+                assert r == INVALIDATING
+                return r
+        active = self._allocate_branch()
+        r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+        assert r == DONE
+        self._delete_from_leaf(leaf, leafpos)
+        branch[branchpos:branchpos + 8] = self._deref(active)
+        branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
+        r = self._add_to_leaf_inner(toadd, active, newpos, depth)
+        assert r == INVALIDATING
+        return r
 
     # returns INVALIDATING, DONE, FULL
     def _add_to_leaf_inner(self, toadd, leaf, pos, depth):
-        if the next bit of toadd is lower:
-            if the next thing is empty:
-                insert next thing into slot
-                mark as terminal
+        if get_bit(toadd, depth) == 0:
+            t = get_type(leaf, pos)
+            if t == EMPTY:
+                leaf[pos:pos + 32] = toadd
                 return INVALIDATING
-            invalid = whether currently invalid
-            if the next thing is not terminal:
-                result = self._add_to_leaf_inner(next level)
-            else:
-                if next thing is the same as toadd:
+            elif t == TERMINAL:
+                oldval0 = leaf[pos:pos + 32]
+                if oldval0 == toadd:
                     return DONE
-                result = self._insert_leaf(toadd and other value):
-                if result != FULL:
-                    increase size by 1
-            if not invalid and result == INVALIDATING:
-                mark invalid
-            return result
+                t1 = get_type(leaf, pos + 32)
+                if t1 == TERMINAL:
+                    oldval1 = leaf[pos + 32:pos + 64]
+                    if toadd == oldval1:
+                        return DONE
+                    nextpos = from_bytes(leaf[:2])
+                    leaf[:2] = to_bytes(pos, 2)
+                    leaf[pos:pos + 64] = bytes(64)
+                    r, nextnextpos = self._insert_leaf([toadd, oldval0, oldval1], leaf, depth)
+                    if r == FULL:
+                        leaf[:2] = to_bytes(nextpos, 2)
+                        leaf[pos:pos + 32] = oldval0
+                        leaf[pos + 32:pos + 64] = oldval1
+                        return FULL
+                    assert nextnextpos == pos
+                    return INVALIDATING
+                r, newpos = self._insert_leaf([toadd, oldval0], leaf, depth + 1)
+                if r == FULL:
+                    return FULL
+                leaf[pos + 64:pos + 66] = to_bytes(newpos, 2)
+                make_invalid(leaf, pos + 32)
+                return INVALIDATING
+            else:
+                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[pos + 64:pos + 66]), depth + 1)
+                if r == INVALIDATING:
+                    if t == MIDDLE:
+                        make_invalid(leaf, pos)
+                        return INVALIDATING
+                    return DONE
+                return r
         else:
-            if the next thing is empty:
-                insert next thing into slot
-                mark as terminal
+            t = get_type(leaf, pos)
+            if t == EMPTY:
+                leaf[pos + 32:pos + 64] = toadd
                 return INVALIDATING
-            invalid = whether currently invalid
-            if the next thing is not terminal:
-                result = self._add_to_leaf_inner(next level)
-            else:
-                if next thing is the same as toadd:
+            elif t == TERMINAL:
+                oldval1 = leaf[pos + 32:pos + 64]
+                if oldval1 == toadd:
                     return DONE
-                result = self._insert_leaf(toadd and other value):
-                if result != FULL:
-                    increase size by 1
-            if not invalid and result == INVALIDATING:
-                mark invalid
-            return result
+                t0 = get_type(leaf, pos)
+                if t0 == TERMINAL:
+                    oldval0 = leaf[pos:pos + 32]
+                    if toadd == oldval0:
+                        return DONE
+                    nextpos = from_bytes(leaf[:2])
+                    leaf[:2] = to_bytes(pos, 2)
+                    leaf[pos:pos + 64] = bytes(64)
+                    r, nextnextpos = self._insert_leaf([toadd, oldval0, oldval1], leaf, depth)
+                    if r == FULL:
+                        leaf[:2] = to_bytes(nextpos, 2)
+                        leaf[pos:pos + 32] = oldval0
+                        leaf[pos + 32:pos + 64] = oldval1
+                        return FULL
+                    assert nextnextpos == pos
+                    return INVALIDATING
+                r, newpos = self._insert_leaf([toadd, oldval1], leaf, depth + 1)
+                if r == FULL:
+                    return FULL
+                leaf[pos + 66:pos + 68] = to_bytes(newpos, 2)
+                make_invalid(leaf, pos + 32)
+                return INVALIDATING
+            else:
+                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[pos + 66:pos + 68]), depth + 1)
+                if r == INVALIDATING:
+                    if t == MIDDLE:
+                        make_invalid(leaf, pos + 32)
+                        return INVALIDATING
+                    return DONE
+                return r
 
-    # returns whether succeeded
-    def _copy_section_between_leafs(self, from, to, pos):
-        topos = firstpos of to
-        if topos is bad:
-            return False
-        set firstpos of to to next
-        copy local branch over
+    # returns state, newpos
+    # state can be FULL, DONE
+    def _copy_between_leafs(self, fromleaf, toleaf, frompos):
+        topos = from_bytes(toleaf[:2])
+        if topos == 0xFFFF:
+            return FULL, None
+        toleaf[0:2] = toleaf[topos:topos + 2]
+        t0 = get_type(fromleaf, frompos)
         lowpos = None
-        if there is anything below in low bit:
-            lowpos = next position
-            if not self._copy_section_between_leafs(low area):
-                reset topos cell to point to firstpos
-                set firstpos to next
-                return False
-        if there is anything below in high bit:
-            if not self._copy_section_between_leafs(high area):
-                self._delete_section_from_leaf(lowpos area)
-                reset topos cell to point to firstpos
-                set firstpos to next
-                return False
-        return True
+        if t0 == MIDDLE or t0 == INVALID:
+            r, lowpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[frompos + 64:frompos + 66]))
+            if r == FULL:
+                assert toleaf[:2] == toleaf[topos:topos + 2]
+                toleaf[:2] = to_bytes(topos, 2)
+                return FULL, None
+        t1 = get_type(fromleaf, frompos + 32)
+        if t1 == MIDDLE or t1 == INVALID:
+            r, highpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[frompos + 66:frompos + 68]))
+            if r == FULL:
+                if t0 == MIDDLE or t0 == INVALID:
+                    self._delete_from_leaf(toleaf, lowpos)
+                assert toleaf[:2] == toleaf[topos:topos + 2]
+                toleaf[:2] = to_bytes(topos, 2)
+                return FULL, None
+        toleaf[topos:topos + 64] = fromleaf[frompos:frompos + 64]
+        toleaf[topos + 64:topos + 66] = to_bytes(lowpos, 2)
+        toleaf[topos + 66:topos + 68] = to_bytes(highpos, 2)
+        return DONE, topos
 
-    def _delete_section_from_leaf(self, leaf, pos):
-        if there is anything below in high bit:
-            self._delete_section_from_leaf(high bit area)
-        if there is anything below in low bit:
-            self._delete_section_from_leaf(low bit area)
-        make pos cell point to firstpos
-        reset firstpos to pos
+    def _delete_from_leaf(self, leaf, pos):
+        t = get_type(leaf, pos)
+        if t == MIDDLE or t == INVALID:
+            self._delete_from_leaf(leaf, from_bytes(leaf[pos + 64:pos + 66]))
+        t = get_type(leaf, pos + 32)
+        if t == MIDDLE or t == INVALID:
+            self._delete_from_leaf(leaf, from_bytes(leaf[pos + 66:pos + 68]))
+        leaf[pos + 2:pos + 68] = bytes(68)
+        leaf[pos:pos + 2] = leaf[:2]
+        leaf[:2] = to_bytes(pos, 2)
 
-    # returns branch
-    def _move_leaf_to_branch(self, leaf, pos):
-        branch = new branch
-        self._move_leaf_to_branch_inner(branch leaf pos)
-        delete leaf
-        return branch
-
-    def _move_leaf_to_branch_inner(self, branch, branchpos, moddepth, leaf, leafpos):
+    def _copy_leaf_to_branch(self, branch, branchpos, moddepth, leaf, leafpos):
         if moddepth == 0:
-            if there is no active child:
-                make new active child
-            if not self._copy_section_between_leafs(to active child):
-                make new active child
-                result = self._copy_section_between_leafs(to active child)
-                assert result
-            insert child info to branchpos
+            active = self._ref(branch[:8])
+            if active is None:
+                active = self._allocate_branch()
+                branch[0:8] = self._deref(active)
+            r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+            if r == FULL:
+                active = self._allocate_branch()
+                branch[0:8] = self._deref(active)
+                r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+                assert r == DONE
+            branch[branchpos:branchpos + 8] = self._ref(active)
+            branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
             return
-        copy cell
-        if there is anything in the 0 position:
-            self._move_leaf_to_branch_inner(0 position)
-        if there is anything in the 1 position:
-            self._move_leaf_to_branch_inner(1 position)
+        branch[branchpos:branchpos + 64] = leaf[leafpos:leafpos + 64]
+        t = get_type(leaf, leafpos)
+        if t == MIDDLE or t == INVALID:
+            self._copy_leaf_to_branch(branch, branchpos + 64, moddepth - 1, leaf, from_bytes(leaf[leafpos + 64:leafpos + 66]))
+        t = get_type(leaf, leafpos + 32)
+        if t == MIDDLE or t == INVALID:
+            self._copy_leaf_to_branch(branch, branchpos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1, leaf, from_bytes(leaf[leafpos + 66:leafpos + 68]))
 
-    # returns (INVALIDATING, FULL), pos
+    # returns (status, pos)
+    # status can be INVALIDATING, FULL
     def _insert_leaf(self, things, leaf, depth):
         pos = from_bytes(leaf[:2])
         if pos == 0xFFFF:
@@ -569,7 +634,7 @@ class MerkleSet:
         return INVALIDATING, pos
 
     def remove(self, toremove):
-        return self._remove(shahash(toremove))
+        return self.remove_already_hashed(shahash(toremove))
 
     def remove_already_hashed(self, toremove):
         return self._remove(flip_terminal(toremove))
@@ -760,9 +825,9 @@ class MerkleSet:
         return result
 
     def batch_add_and_remove(self, toadd, toremove):
-        self._batch_add_and_remove([shahash(x) for x in toadd], [shahash(x) for x in toremove])
+        self.batch_add_and_remove_already_hashed([shahash(x) for x in toadd], [shahash(x) for x in toremove])
 
-    def batch_add_and_remove(self, toadd, toremove):
+    def batch_add_and_remove_already_hashed(self, toadd, toremove):
         self._batch_add_and_remove([flip_terminal(x) for x in toadd], [flip_terminal(x) for x in toremove])
 
     def _batch_add_and_remove(self, toadd, toremove):
@@ -792,7 +857,7 @@ class MerkleSet:
 
     # returns (boolean, proof string)
     def is_included(self, tocheck):
-        return self._is_included(shahash(tocheck))
+        return self.is_included_already_hashed(shahash(tocheck))
 
     # returns (boolean, proof string)
     def is_included_already_hashed(self, tocheck):
