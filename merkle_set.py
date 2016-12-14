@@ -445,81 +445,82 @@ class MerkleSet:
 
     # returns INVALIDATING, DONE, FULL
     def _add_to_leaf_inner(self, toadd, leaf, pos, depth):
+        rpos = pos * 68 + 4
         if get_bit(toadd, depth) == 0:
-            t = get_type(leaf, pos)
+            t = get_type(leaf, rpos)
             if t == EMPTY:
-                leaf[pos:pos + 32] = toadd
+                leaf[rpos:rpos + 32] = toadd
                 return INVALIDATING
             elif t == TERMINAL:
-                oldval0 = leaf[pos:pos + 32]
+                oldval0 = leaf[rpos:rpos + 32]
                 if oldval0 == toadd:
                     return DONE
-                t1 = get_type(leaf, pos + 32)
+                t1 = get_type(leaf, rpos + 32)
                 if t1 == TERMINAL:
-                    oldval1 = leaf[pos + 32:pos + 64]
+                    oldval1 = leaf[rpos + 32:pos + 64]
                     if toadd == oldval1:
                         return DONE
                     nextpos = from_bytes(leaf[:2])
                     leaf[:2] = to_bytes(pos, 2)
-                    leaf[pos:pos + 64] = bytes(64)
+                    leaf[rpos:rpos + 64] = bytes(64)
                     r, nextnextpos = self._insert_leaf([toadd, oldval0, oldval1], leaf, depth)
                     if r == FULL:
                         leaf[:2] = to_bytes(nextpos, 2)
-                        leaf[pos:pos + 32] = oldval0
-                        leaf[pos + 32:pos + 64] = oldval1
+                        leaf[rpos:rpos + 32] = oldval0
+                        leaf[rpos + 32:rpos + 64] = oldval1
                         return FULL
                     assert nextnextpos == pos
                     return INVALIDATING
                 r, newpos = self._insert_leaf([toadd, oldval0], leaf, depth + 1)
                 if r == FULL:
                     return FULL
-                leaf[pos + 64:pos + 66] = to_bytes(newpos, 2)
-                make_invalid(leaf, pos + 32)
+                leaf[rpos + 64:rpos + 66] = to_bytes(newpos, 2)
+                make_invalid(leaf, rpos + 32)
                 return INVALIDATING
             else:
-                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[pos + 64:pos + 66]), depth + 1)
+                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 64:rpos + 66]), depth + 1)
                 if r == INVALIDATING:
                     if t == MIDDLE:
-                        make_invalid(leaf, pos)
+                        make_invalid(leaf, rpos)
                         return INVALIDATING
                     return DONE
                 return r
         else:
-            t = get_type(leaf, pos)
+            t = get_type(leaf, rpos)
             if t == EMPTY:
-                leaf[pos + 32:pos + 64] = toadd
+                leaf[rpos + 32:rpos + 64] = toadd
                 return INVALIDATING
             elif t == TERMINAL:
-                oldval1 = leaf[pos + 32:pos + 64]
+                oldval1 = leaf[rpos + 32:rpos + 64]
                 if oldval1 == toadd:
                     return DONE
-                t0 = get_type(leaf, pos)
+                t0 = get_type(leaf, rpos)
                 if t0 == TERMINAL:
-                    oldval0 = leaf[pos:pos + 32]
+                    oldval0 = leaf[rpos:rpos + 32]
                     if toadd == oldval0:
                         return DONE
                     nextpos = from_bytes(leaf[:2])
                     leaf[:2] = to_bytes(pos, 2)
-                    leaf[pos:pos + 64] = bytes(64)
+                    leaf[rpos:rpos + 64] = bytes(64)
                     r, nextnextpos = self._insert_leaf([toadd, oldval0, oldval1], leaf, depth)
                     if r == FULL:
                         leaf[:2] = to_bytes(nextpos, 2)
-                        leaf[pos:pos + 32] = oldval0
-                        leaf[pos + 32:pos + 64] = oldval1
+                        leaf[rpos:rpos + 32] = oldval0
+                        leaf[rpos + 32:rpos + 64] = oldval1
                         return FULL
                     assert nextnextpos == pos
                     return INVALIDATING
                 r, newpos = self._insert_leaf([toadd, oldval1], leaf, depth + 1)
                 if r == FULL:
                     return FULL
-                leaf[pos + 66:pos + 68] = to_bytes(newpos, 2)
-                make_invalid(leaf, pos + 32)
+                leaf[rpos + 66:rpos + 68] = to_bytes(newpos, 2)
+                make_invalid(leaf, rpos + 32)
                 return INVALIDATING
             else:
-                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[pos + 66:pos + 68]), depth + 1)
+                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 66:rpos + 68]), depth + 1)
                 if r == INVALIDATING:
                     if t == MIDDLE:
-                        make_invalid(leaf, pos + 32)
+                        make_invalid(leaf, rpos + 32)
                         return INVALIDATING
                     return DONE
                 return r
@@ -530,27 +531,29 @@ class MerkleSet:
         topos = from_bytes(toleaf[:2])
         if topos == 0xFFFF:
             return FULL, None
-        toleaf[0:2] = toleaf[topos:topos + 2]
-        t0 = get_type(fromleaf, frompos)
+        rfrompos = 4 + frompos * 68
+        rtopos = 4 + topos * 68
+        toleaf[0:2] = toleaf[rtopos:rtopos + 2]
+        t0 = get_type(fromleaf, rfrompos)
         lowpos = None
         if t0 == MIDDLE or t0 == INVALID:
-            r, lowpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[frompos + 64:frompos + 66]))
+            r, lowpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 64:rfrompos + 66]))
             if r == FULL:
-                assert toleaf[:2] == toleaf[topos:topos + 2]
+                assert toleaf[:2] == toleaf[rtopos:rtopos + 2]
                 toleaf[:2] = to_bytes(topos, 2)
                 return FULL, None
-        t1 = get_type(fromleaf, frompos + 32)
+        t1 = get_type(fromleaf, rfrompos + 32)
         if t1 == MIDDLE or t1 == INVALID:
-            r, highpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[frompos + 66:frompos + 68]))
+            r, highpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 66:rfrompos + 68]))
             if r == FULL:
                 if t0 == MIDDLE or t0 == INVALID:
                     self._delete_from_leaf(toleaf, lowpos)
-                assert toleaf[:2] == toleaf[topos:topos + 2]
+                assert toleaf[:2] == toleaf[rtopos:rtopos + 2]
                 toleaf[:2] = to_bytes(topos, 2)
                 return FULL, None
-        toleaf[topos:topos + 64] = fromleaf[frompos:frompos + 64]
-        toleaf[topos + 64:topos + 66] = to_bytes(lowpos, 2)
-        toleaf[topos + 66:topos + 68] = to_bytes(highpos, 2)
+        toleaf[rtopos:rtopos + 64] = fromleaf[rfrompos:rfrompos + 64]
+        toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos, 2)
+        toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos, 2)
         return DONE, topos
 
     def _delete_from_leaf(self, leaf, pos):
@@ -565,6 +568,7 @@ class MerkleSet:
         leaf[:2] = to_bytes(pos, 2)
 
     def _copy_leaf_to_branch(self, branch, branchpos, moddepth, leaf, leafpos):
+        rleafpos = 4 + leafpos * 68
         if moddepth == 0:
             active = self._ref(branch[:8])
             if active is None:
@@ -579,13 +583,13 @@ class MerkleSet:
             branch[branchpos:branchpos + 8] = self._ref(active)
             branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
             return
-        branch[branchpos:branchpos + 64] = leaf[leafpos:leafpos + 64]
-        t = get_type(leaf, leafpos)
+        branch[branchpos:branchpos + 64] = leaf[rleafpos:rleafpos + 64]
+        t = get_type(leaf, rleafpos)
         if t == MIDDLE or t == INVALID:
-            self._copy_leaf_to_branch(branch, branchpos + 64, moddepth - 1, leaf, from_bytes(leaf[leafpos + 64:leafpos + 66]))
-        t = get_type(leaf, leafpos + 32)
+            self._copy_leaf_to_branch(branch, branchpos + 64, moddepth - 1, leaf, from_bytes(leaf[rleafpos + 64:rleafpos + 66]))
+        t = get_type(leaf, rleafpos + 32)
         if t == MIDDLE or t == INVALID:
-            self._copy_leaf_to_branch(branch, branchpos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1, leaf, from_bytes(leaf[leafpos + 66:leafpos + 68]))
+            self._copy_leaf_to_branch(branch, branchpos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1, leaf, from_bytes(leaf[rleafpos + 66:rleafpos + 68]))
 
     # returns (status, pos)
     # status can be INVALIDATING, FULL
@@ -594,8 +598,7 @@ class MerkleSet:
         if pos == 0xFFFF:
             return FULL, None
         lpos = pos * 68 + 4
-        nextpos = from_bytes(leaf[lpos:lpos + 2])
-        leaf[:2] = to_bytes(nextpos, 2)
+        leaf[:2] = leaf[lpos:lpos + 2]
         things.sort()
         if len(things) == 2:
             leaf[lpos:lpos + 32] = things[0]
