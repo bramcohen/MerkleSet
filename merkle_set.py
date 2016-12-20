@@ -65,15 +65,13 @@ EMPTY1 = 4
 
 NOTSTARTED = 2
 ONELEFT = 3
-INVALIDATING = 4
-DONE = 5
-FULL = 6
+FRAGILE = 4
+INVALIDATING = 5
+DONE = 6
+FULL = 7
 
 ERROR = bytearray([1] * 32)
 BLANK = bytearray([0] * 32)
-
-def shahash(mystr):
-    return sha256(mystr).digest()
 
 def flip_terminal(mystr):
     assert len(mystr) == 32
@@ -97,7 +95,7 @@ def get_bit(mybytes, pos):
     return (mybytes[-(pos // 8) - 1] >> (pos % 8)) & 1
 
 def confirm_included(root, val, proof):
-    return confirm_included_already_hashed(root, shahash(val), proof)
+    return confirm_included_already_hashed(root, sha256(val).digest(), proof)
 
 def confirm_included_already_hashed(root, val, proof):
     return _confirm_included(root, flip_terminal(val), proof)
@@ -145,7 +143,7 @@ def _find_implied_root_inclusion(depth, proof, val):
         return ERROR
 
 def confirm_not_included(root, val, proof):
-    return confirm_not_included_already_hashed(root, shahash(val), proof)
+    return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
 
 def confirm_not_included_already_hashed(root, val, proof):
     return _confirm_included(root, flip_terminal(val), proof)
@@ -278,7 +276,7 @@ class MerkleSet:
         return hasher(block[pos:pos + 64])
 
     def add(self, toadd):
-        return self.add_already_hashed(shahash(toadd))
+        return self.add_already_hashed(sha256(toadd).digest())
 
     def add_already_hashed(self, toadd):
         return self._add(flip_terminal(toadd))
@@ -315,7 +313,8 @@ class MerkleSet:
             if r == INVALIDATING:
                 if get_type(block, pos) != INVALID:
                     make_invalid(block, pos)
-                    return INVALIDATING
+                    if get_type(block, pos + 32) != INVALID:
+                        return INVALIDATING
                 return DONE
             if r == DONE:
                 return DONE
@@ -325,7 +324,10 @@ class MerkleSet:
                 if t1 == EMPTY:
                     return NOTSTARTED
                 block[pos:pos + 32] = toadd
-                return INVALIDATING
+                if t1 != INVALID:
+                    return INVALIDATING
+                else:
+                    return DONE
             assert t0 == TERMINAL
             v0 = block[pos:pos + 32]
             if v0 == toadd:
@@ -339,13 +341,17 @@ class MerkleSet:
             else:
                 self._insert_branch([toadd, v0], block, pos + 64, depth + 1, moddepth - 1)
                 make_invalid(block, pos)
-            return INVALIDATING
+            if t1 != INVALID:
+                return INVALIDATING
+            else:
+                return DONE
         else:
             r = self._add_branch_inner(toadd, block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
             if r == INVALIDATING:
                 if get_type(block, pos + 32) != INVALID:
                     make_invalid(block, pos + 32)
-                    return INVALIDATING
+                    if get_type(block, pos) != INVALID:
+                        return INVALIDATING
                 return DONE
             if r == DONE:
                 return DONE
@@ -355,7 +361,10 @@ class MerkleSet:
                 if t0 == EMPTY:
                     return NOTSTARTED
                 block[pos + 32:pos + 64] = toadd
-                return INVALIDATING
+                if t0 != INVALID:
+                    return INVALIDATING
+                else:
+                    return DONE
             assert t1 == TERMINAL
             v1 = block[pos + 32:pos + 64]
             if v1 == toadd:
@@ -369,7 +378,10 @@ class MerkleSet:
             else:
                 self._insert_branch([toadd, v1], block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
                 make_invalid(block, pos + 32)
-            return INVALIDATING
+            if t0 != INVALID:
+                return INVALIDATING
+            else:
+                return DONE
 
     def _insert_branch(self, things, block, pos, depth, moddepth):
         if moddepth == 0:
@@ -415,6 +427,7 @@ class MerkleSet:
         r = self._add_to_leaf_inner(toadd, leaf, pos, depth)
         if r != FULL:
             return r
+        was_invalid = get_type(leaf[leafpos]) == INVALID or get_type(leaf[leafpos + 32]) == INVALID
         if from_bytes(leaf[2:4]) == 1:
             newb = self._allocate_branch()
             self._copy_leaf_to_branch(newb, 8, len(self.subblock_lengths) - 1, leaf, leafpos)
@@ -422,6 +435,8 @@ class MerkleSet:
             branch[branchpos:branchpos + 8] = self._deref(newb)
             branch[branchpos + 8:branchpos + 10] = to_bytes(0xFFFF, 2)
             self._deallocate(leaf)
+            if was_invalid:
+                return DONE
             return INVALIDATING
         active = self._ref(branch[:8])
         if active is not None and active is not leaf:
@@ -432,7 +447,9 @@ class MerkleSet:
                 branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
                 r = self._add_to_leaf_inner(toadd, active, newpos, depth)
                 assert r == INVALIDATING
-                return r
+                if was_invalid:
+                    return DONE
+                return INVALIDATING
         active = self._allocate_branch()
         r, newpos = self._copy_between_leafs(leaf, active, leafpos)
         assert r == DONE
@@ -441,7 +458,9 @@ class MerkleSet:
         branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
         r = self._add_to_leaf_inner(toadd, active, newpos, depth)
         assert r == INVALIDATING
-        return r
+        if was_invalid:
+            return DONE
+        return INVALIDATING
 
     # returns INVALIDATING, DONE, FULL
     def _add_to_leaf_inner(self, toadd, leaf, pos, depth):
@@ -475,7 +494,9 @@ class MerkleSet:
                 if r == FULL:
                     return FULL
                 leaf[rpos + 64:rpos + 66] = to_bytes(newpos, 2)
-                make_invalid(leaf, rpos + 32)
+                make_invalid(leaf, rpos)
+                if get_type(leaf, rpos + 32) == INVALID:
+                    return DONE
                 return INVALIDATING
             else:
                 r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 64:rpos + 66]), depth + 1)
@@ -515,6 +536,8 @@ class MerkleSet:
                     return FULL
                 leaf[rpos + 66:rpos + 68] = to_bytes(newpos, 2)
                 make_invalid(leaf, rpos + 32)
+                if get_type(leaf, rpos) == INVALID:
+                    return DONE
                 return INVALIDATING
             else:
                 r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 66:rpos + 68]), depth + 1)
@@ -637,198 +660,375 @@ class MerkleSet:
         return INVALIDATING, pos
 
     def remove(self, toremove):
-        return self.remove_already_hashed(shahash(toremove))
+        return self.remove_already_hashed(sha256(toremove).digest())
 
     def remove_already_hashed(self, toremove):
         return self._remove(flip_terminal(toremove))
 
     def _remove(self, toremove):
-        t = get_type(self.root)
+        t = get_type(self.root, 0)
         if t == EMPTY:
             return
         elif t == TERMINAL:
             if toremove == self.root:
                 self.root = BLANK
+            return
         else:
-        status, oneval = self._remove_branch(toremove, 4, 0, len(self.subblock_lengths))
+            status, oneval = self._remove_branch(toremove, self.rootblock, 0)
         if status == INVALIDATING:
             make_invalid(self.root, 0)
         elif status == ONELEFT:
             self.root = oneval
+        elif status == FRAGILE:
+            self._catch_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
 
     # returns (status, oneval)
-    # status can be ONELEFT, INVALIDATING, DONE
-    def _remove_branch(self, toremove, block, pos, depth):
-        result, val = self._remove_branch_inner(my vals)
+    # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
+    def _remove_branch(self, toremove, block, depth):
+        result, val = self._remove_branch_inner(toremove, block, 8, depth, len(self.subblock_lengths) - 1)
         assert result != NOTSTARTED
         if result == ONELEFT:
-            delete branch
+            self._deallocate(block)
         return result, val
 
     # returns (status, oneval)
-    # status can be NOTSTARTED, ONELEFT, INVALIDATING, DONE
-    def _remove_branch_inner(self, toremove, pos, depth, moddepth):
+    # status can be NOTSTARTED, ONELEFT, FRAGILE, INVALIDATING, DONE
+    def _remove_branch_inner(self, toremove, block, pos, depth, moddepth):
         if moddepth == 0:
-            if outpointer is to nothing:
+            if block[pos:pos + 8] == bytes(8):
                 return NOTSTARTED, None
-            if pos is bad:
-                r, val = booga _remove_branch
+            p = from_bytes(block[pos + 8:pos + 10])
+            if p == 0xFFFF:
+                r, val = self._remove_branch(toremove, self._ref(block[pos:pos + 8]), depth)
             else:
-                r, val = self._remove_leaf(toremove, toremove_bits, pos, depth)
+                r, val = self._remove_leaf(toremove, self._ref(block[pos:pos + 8]), p, depth)
             if r == ONELEFT:
-                zero out at pos
-            return (r, val)
-        was_invalid = invalid 0 bit or invalid 1 bit
-        if next bit == 0:
-            state, oneval = remove from 0 pos
-            if state == DONE:
+                block[pos:pos + 10] = bytes(10)
+            return r, val
+        if get_bit(block, pos) == 0:
+            r, val = self._remove_branch_inner(toremove, block, pos + 64, depth + 1, moddepth - 1)
+            if r == NOTSTARTED:
+                t = get_type(block, pos)
+                if t == EMPTY:
+                    if get_type(block, pos + 32) == EMPTY:
+                        return NOTSTARTED, None
+                    return DONE, None
+                assert t == TERMINAL
+                if block[pos:pos + 32] == toremove:
+                    if get_type(block, pos + 32) == TERMINAL:
+                        left = block[pos + 32:pos + 64]
+                        block[pos:pos + 64] = bytes(64)
+                        return ONELEFT, left
+                    else:
+                        block[pos:pos + 32] = bytes(32)
+                        return FRAGILE, None
+                elif block[pos + 32:pos + 64] == toremove:
+                    left = block[pos:pos + 32]
+                    block[pos:pos + 64] = bytes(64)
+                    return ONELEFT, left
                 return DONE, None
-            elif state == INVALIDATING:
-                if 0 invalid bit is not set:
-                    set 0 invalid bit
-            elif state == NOTSTARTED:
-                if there is nothing at the current pos:
-                    return NOTSTARTED, None
-                assert terminal in 0
-                if thing in 0 is toremove:
-                    if terminal in 1:
-                        oneval = thing in 1
-                        zero out data
-                        return ONELEFT, oneval
-                    mark 0 as not terminal, valid, zero out
-                    c = collapse down 1
-                    if c is not None:
-                        overwrite with c
-                        mark both valid and terminal
-                elif terminal in 1 and thing in 1 is toremove:
-                    oneval = thing in 0
-                    zero out data
-                    return ONELEFT, oneval
+            elif r == ONELEFT:
+                was_invalid = get_type(block, pos) == INVALID
+                block[pos:pos + 32] = val
+                if get_type(block, pos + 32) == TERMINAL:
+                    return FRAGILE, None
+                if not was_invalid:
+                    return INVALIDATING, None
                 else:
                     return DONE, None
-            else:
-                assert state == ONELEFT
-                if 1 pos is not terminal or branch:
-                    zero out data
-                    return ONELEFT, oneval
-                put oneval into 0 pos
-                mark 0 pos as terminal, not branch, valid
+            elif r == FRAGILE:
+                t1 = get_type(block, pos + 32)
+                if t1 == EMPTY:
+                    return FRAGILE, None
+                self._catch_branch(block, pos + 64, moddepth - 1)
+                if t1 == INVALID:
+                    return DONE, None
+                assert t1 == MIDDLE
+                make_invalid(block, pos)
+                return INVALIDATING, None
+            elif r == INVALIDATING:
+                t = get_type(block, pos)
+                if t == INVALID:
+                    return DONE, None
+                else:
+                    assert t == MIDDLE
+                    make_invalid(block, pos)
+                    if get_type(block, pos + 32) == INVALID:
+                        return DONE, None
+                    return INVALIDATING, None
+            assert r == DONE
+            return r, val
         else:
-            state, oneval = remove from 1 pos
-            if state == DONE:
-                return DONE, None
-            elif state == INVALIDATING:
-                if 1 invalid bit is not set:
-                    set 1 invalid bit
-            elif state == NOTSTARTED:
-                if there is nothing at the current pos:
-                    return NOTSTARTED, None
-                assert terminal in 1
-                if thing in 1 is toremove:
-                    if terminal in 0:
-                        oneval = thing in 0
-                        zero out data
-                        return ONELEFT, oneval
-                    mark 1 as not terminal, valid, zero out
-                    c = collapse down 0
-                    if c is not None:
-                        overwrite with c
-                        mark both valid and terminal
-                elif terminal in 0 and thing in 0 is toremove:
-                    oneval = thing in 1
-                    zero out data
-                    return ONELEFT, oneval
-                else:
+            r, val = self._remove_branch_inner(toremove, block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
+            if r == NOTSTARTED:
+                t = get_type(block, pos + 32)
+                if t == EMPTY:
+                    if get_type(block, pos) == EMPTY:
+                        return NOTSTARTED, None
                     return DONE, None
-            else:
-                assert state == ONELEFT
-                if 0 pos is not terminal or branch:
-                    zero out data
-                    return ONELEFT, oneval
-                put oneval into 1 pos
-                mark 1 pos as terminal, not branch, valid
-        if not was_invalid:
-            return INVALIDATING, None
-        return DONE, None
+                assert t == TERMINAL
+                if block[pos + 32:pos + 64] == toremove:
+                    if get_type(block, pos) == TERMINAL:
+                        left = block[pos:pos + 32]
+                        block[pos:pos + 64] = bytes(64)
+                        return ONELEFT, left
+                    else:
+                        block[pos + 32:pos + 64] = bytes(32)
+                        return FRAGILE, None
+                elif block[pos:pos + 32] == toremove:
+                    left = block[pos + 32:pos + 64]
+                    block[pos:pos + 64] = bytes(64)
+                    return ONELEFT, left
+                return DONE, None
+            elif r == ONELEFT:
+                was_invalid = get_type(block + 32) == INVALID
+                block[pos + 32:pos + 64] = val
+                if get_type(block, pos) == TERMINAL:
+                    return FRAGILE, None
+                if not was_invalid:
+                    return INVALIDATING, None
+                return DONE, None
+            elif r == FRAGILE:
+                t0 = get_type(block)
+                if t0 == EMPTY:
+                    return FRAGILE, None
+                self._catch_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                if t0 == INVALID:
+                    return DONE, None
+                assert t0 == MIDDLE
+                make_invalid(block, pos + 32)
+                return INVALIDATING, None
+            elif r == INVALIDATING:
+                t = get_type(block, pos + 32)
+                if t == INVALID:
+                    return DONE, None
+                else:
+                    assert t == MIDDLE
+                    make_invalid(block, pos + 32)
+                    if get_type(block, pos) == INVALID:
+                        return DONE, None
+                    return INVALIDATING, None
+            assert r == DONE
+            return r, val
 
     # returns (status, oneval)
-    # status can be ONELEFT, INVALIDATING, DONE
+    # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
     def _remove_leaf(self, toremove, block, pos, depth):
-        result, val = call _remove_leaf_inner
+        result, val = call _remove_leaf_inner(toremove, block, pos, depth)
         if result == ONELEFT:
-            deallocate block
-        return result
+            numin = from_bytes(block[2:4])
+            if numin == 1:
+                self._deallocate(block)
+            else:
+                block[2:4] = to_bytes(numin - 1, 2)
+        return result, val
+
+    def _deallocate_leaf_node(self, leaf, pos):
+        rpos = 4 + pos * 68
+        next = leaf[:2]
+        leaf[rpos:rpos + 2] = leaf[:2]
+        leaf[rpos + 2:rpos + 68] = bytes(68)
+        leaf[:2] = to_bytes(pos, 2)
 
     # returns (status, oneval)
-    # status can be ONELEFT, INVALIDATING, DONE
-    def _remove_leaf_inner(self. toremove, block, pos, depth):
-        if next bit is 0:
-            if nothing in 0 position:
+    # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
+    def _remove_leaf_inner(self, toremove, block, pos, depth):
+        rpos = 4 + pos * 68
+        if get_bit(toremove, depth) == 0:
+            t = get_type(block[rpos])
+            if t == EMPTY:
                 return DONE
-            if terminal in 0 position:
-                if 0 val is toremove:
-                    v = _collapse_leaf
-                    if v is not None:
-                        set pos to v
-                    return INVALIDATING
-                else:
-                    return DONE
-            call _remove_leaf_inner on next depth
-        else:
-            if nothing in 1 position:
-                return DONE
-            if terminal in 1 position:
-                if 1 val is toremove:
-                    v = _collapse_leaf
-                    if v is not None:
-                        set pos to v
-                    return INVALIDATING
-                else:
-                    retun DONE
-            call _remove_leaf_inner on next depth
-
-    # returns BOTHTERM string or None
-    def _collapse_branch_inner(self, block, pos, moddepth):
-        if moddepth == 0:
-            if next is branch:
-                r = collapse branch
-                if r is not None:
-                    deallocate branch
-                    zero out data
+            if t == TERMINAL:
+                t1 = get_type(block, rpos + 32)
+                if block[rpos:rpos + 32] == toremove:
+                    if t1 == TERMINAL:
+                        left = block[rpos + 32:rpos + 64]
+                        self._deallocate_leaf_node(block, pos)
+                        return ONELEFT, left
+                    block[rpos:rpos + 32] = bytes(32)
+                    if t1 == MIDDLE:
+                        return INVALIDATING, None
+                    else:
+                        assert t1 == INVALID
+                        return DONE, None
+                if block[rpos + 32:rpos + 64] == toremove:
+                    left = block[rpos:rpos + 32]
+                    self._deallocate_leaf_node(block, pos)
+                    return ONELEFT, left
+                return DONE, None
             else:
-                r = collapse leaf
-                if r is not None:
-                    deallocate leaf
-                    zero out data
-            return r
-        if both terminal:
-            r = my data
-        elif nothing in 0:
-            r = collapse branch in 1
-        elif nothing in 1:
-            r = collapse branch in 0
+                r, val = self._remove_leaf_inner(toremove, block, from_bytes(block[rpos + 64:rpos + 66]), depth + 1)
+                if r == DONE:
+                    return DONE, None
+                if r == INVALIDATING:
+                    if t == MIDDLE:
+                        make_invalid(block, rpos)
+                        if get_type(block, rpos + 32) != INVALID:
+                            return INVALIDATING, None
+                    return DONE, None
+                if r == ONELEFT:
+                    t1 = get_type(block, rpos + 32)
+                    assert t1 != EMPTY
+                    block[rpos:rpos + 32] = val
+                    if t1 == TERMINAL:
+                        return FRAGILE, None
+                    if t1 == MIDDLE and t != INVALID:
+                        return INVALIDATING, None
+                    return DONE, None
+                assert r == FRAGILE
+                t1 = get_type(block, rpos + 32)
+                if t1 == EMPTY:
+                    return FRAGILE, None
+                self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]))
         else:
-            return None
-        if r is not None:
-            zero out data
+            t = get_type(block[rpos + 32])
+            if t == EMPTY:
+                return DONE
+            elif t == TERMINAL:
+                t0 = get_type(block, rpos)
+                if block[rpos + 32:rpos + 64] == toremove:
+                    if t0 == TERMINAL:
+                        left = block[rpos + 32:rpos + 64]
+                        self._deallocate_leaf_node(block, pos)
+                        return ONELEFT, left
+                    block[rpos + 32:rpos + 64] = bytes(32)
+                    if t1 == MIDDLE:
+                        return INVALIDATING, None
+                    else:
+                        assert t0 == INVALID
+                        return DONE, None
+                if block[rpos:rpos + 32] == toremove:
+                    left = block[rpos + 32:rpos + 64]
+                    self._deallocate_leaf_node(node, pos)
+                    return ONELEFT, left
+                return DONE, None
+            else:
+                r, val = self._remove_leaf_inner(toremove, block, from_bytes(block[rpos + 66:rpos + 68]), depth + 1)
+                if r == DONE:
+                    return DONE, None
+                if r == INVALIDATING:
+                    if t == MIDDLE:
+                        make_invalid(block, rpos + 32)
+                        if get_type(block, rpos + 32) != INVALID:
+                            return INVALIDATING, None
+                    return DONE, None
+                if r == ONELEFT:
+                    t0 = get_type(block, rpos)
+                    assert t0 != EMPTY
+                    block[rpos + 32:rpos + 64] = val
+                    if t0 == TERMINAL:
+                        return FRAGILE, None
+                    if t0 == MIDDLE and t != INVALID:
+                        return INVALIDATING, None
+                    return DONE, None
+                assert r == FRAGILE
+                t0 = get_type(block, rpos)
+                if t0 == EMPTY:
+                    return FRAGILE, None
+                self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]))
+
+    def _catch_branch(self, block, pos, moddepth):
+        if moddepth == 0:
+            leafpos = from_bytes(block[pos + 8:pos + 10])
+            if leafpos == 0xFFFF:
+                self._catch_branch(self._ref(block[pos:pos + 8]), 8, len(self.subblock_lengths) - 1)
+            else:
+                self._catch_leaf(self._ref(block[pos:pos + 8], leafpos)
+            return
+        if get_type(block, pos) == EMPTY:
+            r = self._collapse_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+            if r != None:
+                block[pos:pos + 64] = r
+            return
+        if get_type(block, pos + 32) == EMPTY:
+            r = self._collapse_branch(block, pos + 64, moddepth - 1)
+            if r != None:
+                block[pos:pos + 64] = r
+
+    # returns two hashes string or None
+    def _collapse_branch(self, block):
+        r = self._collapse_branch_inner(block, 8, len(self.subblock_lengths) - 1)
+        if r != None:
+            self._deallocate(block)
         return r
 
-    # returns BOTHTERM string or None
-    def _collapse_leaf(self, block, pos):
-        if bothterm:
-            result = my string
-        elif nothing in 0 position:
-            result = _collapse_leaf in 1
-        elif nothing in 1 position:
-            result = collapse leaf in 0
-        else:
-            return None
-        if result is not None:
-            deallocate pos
-        return result
+    # returns two hashes string or None
+    def _collapse_branch_inner(self, block, pos, moddepth):
+        if moddepth == 0:
+            leafpos = from_bytes(block[pos + 8:pos + 10])
+            if leafpos == 0xFFFF:
+                r = self._collapse_branch(self._ref(block[pos:pos + 8]))
+            else:
+                r = self._collapse_leaf(self._ref(block[pos:pos + 8]))
+            if r != None:
+                block[pos:pos + 10] = bytes(10)
+            return r
+        t0 = get_type(block[pos])
+        t1 = get_type(block[pos + 32])
+        if t0 == TERMINAL and t1 == TERMINAL:
+            r = block[pos:pos + 64]
+            block[pos:pos + 64] = bytes(64)
+            return r
+        if t0 == EMPTY:
+            r = self._collapse_branch_inner(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+            if r != None:
+                block[pos + 32:pos + 64] = bytes(32)
+            return r
+        if t1 == EMPTY:
+            r = self._collapse_branch_inner(block, pos + 64, moddepth - 1)
+            if r != None:
+                block[pos:pos + 32] = bytes(32)
+            return r
+        return None
+
+    def _catch_leaf(self, leaf, pos):
+        rpos = 4 + pos * 68
+        t0 = get_type(leaf, rpos)
+        t1 = get_type(leaf, rpos + 32)
+        if t0 == EMPTY:
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
+            if r != None:
+                leaf[rpos + 66:rpos + 68] = bytes(2)
+                leaf[rpos:rpos + 64] = r
+            return
+        if t1 == EMPTY:
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]))
+            if r != None:
+                leaf[rpos + 64:rpos + 66] = bytes(2)
+                leaf[rpos:rpos + 64] = r
+            return
+
+    # returns two hashes string or None
+    def _collapse_leaf(self, leaf, pos):
+        r = self._collapse_leaf_inner(leaf, pos)
+        if r != None:
+            inputs = from_bytes(leaf[2:4])
+            if inputs == 1:
+                self._deallocate(leaf)
+                return r
+            leaf[2:4] = to_bytes(inputs - 1, 2)
+        return r
+
+    # returns two hashes string or None
+    def _collapse_leaf_inner(self, leaf, pos):
+        rpos = 4 + pos * 68
+        t0 = get_type(leaf, rpos)
+        t1 = get_type(leaf, rpos + 32)
+        r = None
+        if t0 == TERMINAL and t1 == TERMINAL:
+            r = leaf[rpos:rpos + 64]
+        elif t0 == EMPTY:
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[pos + 66:pos + 68]))
+        elif t1 == EMPTY:
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[pos + 64:pos + 66]))
+        if r is not None:
+            leaf[rpos + 2:rpos + 68] = bytes(66)
+            leaf[rpos:rpos + 2] = leaf[:2]
+            leaf[:2] = to_bytes(pos, 2)
+        return r
 
     def batch_add_and_remove(self, toadd, toremove):
-        self.batch_add_and_remove_already_hashed([shahash(x) for x in toadd], [shahash(x) for x in toremove])
+        self.batch_add_and_remove_already_hashed([sha256(x).digest() for x in toadd], [sha256(x).digest() for x in toremove])
 
     def batch_add_and_remove_already_hashed(self, toadd, toremove):
         self._batch_add_and_remove([flip_terminal(x) for x in toadd], [flip_terminal(x) for x in toremove])
@@ -860,7 +1060,7 @@ class MerkleSet:
 
     # returns (boolean, proof string)
     def is_included(self, tocheck):
-        return self.is_included_already_hashed(shahash(tocheck))
+        return self.is_included_already_hashed(sha256(tocheck).digest())
 
     # returns (boolean, proof string)
     def is_included_already_hashed(self, tocheck):
