@@ -2,8 +2,11 @@ from hashlib import sha256
 from blake2 import blake2s
 from binascii import b2a_hex
 
-from_bytes = int.from_bytes
-to_bytes = int.to_bytes
+def from_bytes(f):
+    return int(f.encode('hex'), 16)
+
+def to_bytes(n, l):
+    return bytearray([(n >> (i * 8)) & 0xff for i in range(l - 1, -1, -1)])
 
 __all__ = ['confirm_included', 'confirm_included_already_hashed', 'confirm_not_included', 
         'confirm_not_included_already_hashed', 'MerkleSet']
@@ -124,13 +127,13 @@ def _find_implied_root_inclusion(depth, proof, val):
             return ERROR
         if len(pos) == 33:
             return hasher(proof[1:] + val)
-        return hasher((proof[1:] + self._find_implied_root_inclusion(depth + 1, proof[33:], val))
+        return hasher(proof[1:] + self._find_implied_root_inclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
         if get_bit(val, depth) == 1 or len(pos) < 33:
             return ERROR
         if len(pos) == 33:
             return hasher(val + proof[1:])
-        return hasher((self._find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:])
+        return hasher(self._find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:])
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             return ERROR
@@ -174,11 +177,11 @@ def _find_implied_root_exclusion(depth, proof, val):
     if t == GIVE0:
         if get_bit(val, depth) == 0 or len(pos) < 33:
             return ERROR
-        return hasher((proof[1:] + self._find_implied_root_exclusion(depth + 1, proof[33:], val))
+        return hasher(proof[1:] + self._find_implied_root_exclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
         if get_bit(val, depth) == 1 or len(pos) < 33:
             return ERROR
-        return hasher((self._find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:])
+        return hasher(self._find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:])
     elif t == GIVEBOTH:
         if len(proof) != 65:
             return ERROR
@@ -814,7 +817,7 @@ class MerkleSet:
     # returns (status, oneval)
     # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
     def _remove_leaf(self, toremove, block, pos, depth):
-        result, val = call _remove_leaf_inner(toremove, block, pos, depth)
+        result, val = self._remove_leaf_inner(toremove, block, pos, depth)
         if result == ONELEFT:
             numin = from_bytes(block[2:4])
             if numin == 1:
@@ -933,7 +936,7 @@ class MerkleSet:
             if leafpos == 0xFFFF:
                 self._catch_branch(self._ref(block[pos:pos + 8]), 8, len(self.subblock_lengths) - 1)
             else:
-                self._catch_leaf(self._ref(block[pos:pos + 8], leafpos)
+                self._catch_leaf(self._ref(block[pos:pos + 8], leafpos))
             return
         if get_type(block, pos) == EMPTY:
             r = self._collapse_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
