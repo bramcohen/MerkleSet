@@ -282,7 +282,7 @@ class MerkleSet:
         return self.add_already_hashed(sha256(toadd).digest())
 
     def add_already_hashed(self, toadd):
-        return self._add(flip_terminal(toadd))
+        self._add(flip_terminal(toadd))
 
     def _add(self, toadd):
         t = get_type(self.root, 0)
@@ -1054,12 +1054,12 @@ class MerkleSet:
             else:
                 self._remove(toremove)
                 removepos += 1
-        while addpos < len(toadd):
-            self._add(toadd[addpos])
-            addpos += 1
         while removepos < len(toremove):
             self._remove(toremove)
             removepos += 1
+        while addpos < len(toadd):
+            self._add(toadd[addpos])
+            addpos += 1
 
     # returns (boolean, proof string)
     def is_included(self, tocheck):
@@ -1165,3 +1165,138 @@ class MerkleSet:
             buf.append(chr(GIVE0))
             buf.append(block[pos:pos + 32])
             return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]), depth + 1, buf)
+
+class ReferenceMerkleSet:
+    def __init__(self):
+        self.root = EmptyNode(0)
+
+    def get_root(self):
+        return self.root.hash
+
+    def add_already_hashed(self, toadd):
+        toadd = flip_terminal(toadd)
+        self.root = self.root.add(toadd)
+
+    def remove_already_hashed(self, toremove):
+        toremove = flip_terminal(toremove)
+        self.root = self.root.remove(toremove)
+
+    def is_included_already_hashed(self, tocheck):
+        if self.root.size == 0:
+            return False, b''
+        if self.root.size == 1:
+            return tocheck == self.root.hash, b''
+        return self.root.is_included(tocheck)
+
+class EmptyNode:
+    def __init__(self, depth):
+        self.hash = EMPTY
+        self.size = 0
+        self.depth = depth
+
+    def add(self, toadd):
+        return TerminalNode(toadd, self.depth)
+
+    def remove(self, toremove):
+        return self
+
+class TerminalNode:
+    def __init__(self, hash, depth):
+        self.hash = hash
+        self.depth = depth
+        self.size = 1
+
+    def add(self, toadd):
+        if toadd == self.hash:
+            return self
+        return self._make_middle(self.hash, toadd, self.depth)
+
+    def _make_middle(self, thinga, thingb, depth):
+        ta = get_bit(thinga, depth)
+        tb = get_bit(thingb, depth)
+        if ta == tb:
+            if ta == 0:
+                return MiddleNode(self._make_middle(thinga, thingb, depth + 1), EmptyNode(depth + 1), depth)
+            return MiddleNode(EmptyNode(depth + 1), self._make_middle(thinga, thingb, depth))
+        else:
+            if ta == 0:
+                return MiddleNode(TerminalNode(thinga), TerminalNode(thingb), depth)
+            return MiddleNode(TerminalNode(thingb), TerminalNode(thinga), depth)
+
+    def remove(self, toremove):
+        if toremove == self.hash:
+            return EmptyNode(self.depth)
+        return self
+
+class MiddleNode:
+    def __init__(self, low, high, depth):
+        assert low.depth == depth + 1
+        assert high.depth == depth + 1
+        self.depth = depth
+        self.low = low
+        self.high = high
+        self.size = low.size + high.size
+        if low.size == 0 and high.size == 2:
+            self.hash = high.hash
+        elif high.size == 0 and low.size == 2:
+            self.hash = low.hash
+        else:
+            self.hash = hasher(low.hash + high.hash)
+
+    def add(self, toadd):
+        if get_bit(toadd, self.depth) == 0:
+            r = self.low.add(toadd)
+            if r == self.low:
+                return self
+            return MiddleNode(r, self.high, self.depth)
+        else:
+            r = self.high.add(toadd)
+            if r == self.high:
+                return self
+            return MiddleNode(self.low, r, self.depth)
+
+    def remove(self, toremove):
+        if get_bit(toremove, self.depth) == 0:
+            r = self.low.remove(toremove)
+            if r == self.low:
+                return self
+            a, b = r, self.high
+        else:
+            r = self.high.remove(toremove)
+            if r == self.high:
+                return self
+            a, b = self.low, r
+        if a.size == 0 and b.size == 1:
+            return TerminalNode(b.hash, self.depth)
+        if b.size == 0 and a.size == 1:
+            return TerminalNode(a.hash, self.depth)
+        return MiddleNode(a, b, self.depth)
+
+    def is_included(self, tocheck):
+        if self.size == 2:
+            if self.low.size == 0:
+                return self.high.is_included(tocheck)
+            if self.high.size == 0:
+                return self.low.is_included(tocheck)
+            if tocheck == self.low.hash:
+                return True, chr(GIVE1) + self.high.hash
+            if tocheck == self.high.hash:
+                return True, chr(GIVE0) + self.low.hash
+            return False, chr(GIVEBOTH) + self.low.hash + self.high.hash
+        b = get_bit(tocheck, self.depth)
+        if b == 0:
+            if self.low.size == 0:
+                return False, chr(EMPTY0) + self.high.hash
+            r, p = self.low.is_included(tocheck)
+            if self.high.size == 0:
+                return r, chr(EMPTY1) + p
+            return r, chr(GIVE1) + self.high.hash + p
+        else:
+            if self.high.size == 0:
+                return False, chr(EMPTY1) + self.low.hash
+            r, p = self.high.is_included(tocheck)
+            if self.low.size == 0:
+                return r, chr(EMPTY0) + p
+            return r, chr(GIVE0) + self.low.hash + p
+            
+
