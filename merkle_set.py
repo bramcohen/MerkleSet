@@ -1,6 +1,6 @@
 from hashlib import sha256
 from blake2 import blake2s
-from binascii import b2a_hex
+from binascii import a2b_hex
 
 def from_bytes(f):
     return int(f.encode('hex'), 16)
@@ -83,8 +83,8 @@ def flip_terminal(mystr):
     return r
 
 def hasher(mystr):
-    assert len(mystr) == 64
-    r = bytearray(b2a_hex(blake2s(mystr, 32)))
+    #r = bytearray(a2b_hex(blake2s(bytes(mystr), 32)))
+    r = bytearray(sha256(mystr).digest())
     r[0] = MIDDLE | (r[0] & 0x3F)
     return r
 
@@ -121,7 +121,7 @@ def _find_implied_root_inclusion(depth, proof, val):
         return ERROR
     if len(proof) == 0:
         return ERROR
-    t = ord(proof[0])
+    t = proof[0]
     if t == GIVE0:
         if get_bit(val, depth) == 0 or len(pos) < 33:
             return ERROR
@@ -129,11 +129,11 @@ def _find_implied_root_inclusion(depth, proof, val):
             return hasher(proof[1:] + val)
         return hasher(proof[1:] + self._find_implied_root_inclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
-        if get_bit(val, depth) == 1 or len(pos) < 33:
+        if get_bit(val, depth) == 1 or len(proof) < 33:
             return ERROR
-        if len(pos) == 33:
+        if len(proof) == 33:
             return hasher(val + proof[1:])
-        return hasher(self._find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:])
+        return hasher(_find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:])
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             return ERROR
@@ -141,7 +141,7 @@ def _find_implied_root_inclusion(depth, proof, val):
     elif t == EMPTY1:
         if get_bit(val, depth) == 1:
             return ERROR
-        return hasher(self._find_implied_root_inclusion(depth + 1, proof[1:], val) + BLANK)
+        return hasher(_find_implied_root_inclusion(depth + 1, proof[1:], val) + BLANK)
     else:
         return ERROR
 
@@ -149,7 +149,7 @@ def confirm_not_included(root, val, proof):
     return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
 
 def confirm_not_included_already_hashed(root, val, proof):
-    return _confirm_included(root, flip_terminal(val), proof)
+    return _confirm_not_included(root, flip_terminal(val), proof)
 
 def _confirm_not_included(root, val, proof):
     assert len(root) == 32 and len(val) == 32
@@ -173,13 +173,13 @@ def _find_implied_root_exclusion(depth, proof, val):
         return ERROR
     if len(proof) == 0:
         return ERROR
-    t = ord(proof[0])
+    t = proof[0]
     if t == GIVE0:
-        if get_bit(val, depth) == 0 or len(pos) < 33:
+        if get_bit(val, depth) == 0 or len(proof) < 33:
             return ERROR
         return hasher(proof[1:] + self._find_implied_root_exclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
-        if get_bit(val, depth) == 1 or len(pos) < 33:
+        if get_bit(val, depth) == 1 or len(proof) < 33:
             return ERROR
         return hasher(self._find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:])
     elif t == GIVEBOTH:
@@ -1182,15 +1182,20 @@ class ReferenceMerkleSet:
         self.root = self.root.remove(toremove)
 
     def is_included_already_hashed(self, tocheck):
+        tocheck = flip_terminal(tocheck)
         if self.root.size == 0:
             return False, b''
         if self.root.size == 1:
             return tocheck == self.root.hash, b''
         return self.root.is_included(tocheck)
 
+    def audit(self):
+        assert self.root.depth == 0
+        self.root.audit()
+
 class EmptyNode:
     def __init__(self, depth):
-        self.hash = EMPTY
+        self.hash = BLANK
         self.size = 0
         self.depth = depth
 
@@ -1200,8 +1205,12 @@ class EmptyNode:
     def remove(self, toremove):
         return self
 
+    def audit(self):
+        pass
+
 class TerminalNode:
     def __init__(self, hash, depth):
+        assert len(hash) == 32
         self.hash = hash
         self.depth = depth
         self.size = 1
@@ -1221,12 +1230,15 @@ class TerminalNode:
         else:
             if ta == 0:
                 return MiddleNode(TerminalNode(thinga), TerminalNode(thingb), depth)
-            return MiddleNode(TerminalNode(thingb), TerminalNode(thinga), depth)
+            return MiddleNode(TerminalNode(thingb, depth + 1), TerminalNode(thinga, depth + 1), depth)
 
     def remove(self, toremove):
         if toremove == self.hash:
             return EmptyNode(self.depth)
         return self
+
+    def audit(self):
+        pass
 
 class MiddleNode:
     def __init__(self, low, high, depth):
@@ -1244,6 +1256,7 @@ class MiddleNode:
             self.hash = hasher(low.hash + high.hash)
 
     def add(self, toadd):
+        toadd = bytearray(toadd)
         if get_bit(toadd, self.depth) == 0:
             r = self.low.add(toadd)
             if r == self.low:
@@ -1256,6 +1269,7 @@ class MiddleNode:
             return MiddleNode(self.low, r, self.depth)
 
     def remove(self, toremove):
+        toremove = bytearray(toremove)
         if get_bit(toremove, self.depth) == 0:
             r = self.low.remove(toremove)
             if r == self.low:
@@ -1298,5 +1312,43 @@ class MiddleNode:
             if self.low.size == 0:
                 return r, chr(EMPTY0) + p
             return r, chr(GIVE0) + self.low.hash + p
-            
 
+    def audit(self):
+        assert self.low.depth == self.depth + 1
+        assert self.high.depth == self.depth + 1
+        assert self.size == self.low.size + self.high.size
+        assert self.size >= 2
+        self.low.audit()
+        self.high.audit()            
+
+from random import getrandbits, seed
+
+def testref(num, ref):
+    hashes = [to_bytes(getrandbits(256), 32) for i in range(num)]
+    roots = []
+    assert ref.get_root() == BLANK
+    for h in hashes:
+        r, proof = ref.is_included_already_hashed(h)
+        assert not r
+        assert confirm_not_included_already_hashed(ref.get_root(), h, proof)
+        ref.add_already_hashed(h)
+        ref.audit()
+        r, proof = ref.is_included_already_hashed(h)
+        assert r
+        assert confirm_included_already_hashed(ref.get_root(), h, proof)
+        roots.append(ref.root)
+    for i in range(num):
+        h = hashes[-i-1]
+        assert roots[-i-1] == ref.root
+        r, proof = ref.is_included_already_hashed(h)
+        assert r
+        assert confirm_included_already_hashed(ref.get_root(), h, proof)
+        ref.remove_already_hashed(h)
+        ref.audit()
+        r, proof = ref.is_included_already_hashed(h)
+        assert not r
+        assert confirm_not_included_already_hashed(ref.get_root(), h, proof)
+    assert ref.get_root() == BLANK
+
+seed(3)
+testref(100, ReferenceMerkleSet())
