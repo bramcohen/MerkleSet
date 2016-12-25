@@ -1,12 +1,10 @@
-from hashlib import sha256
-from blake2 import blake2s
-from binascii import a2b_hex
+from hashlib import blake2s, sha256
 
 def from_bytes(f):
     return int(f.encode('hex'), 16)
 
 def to_bytes(n, l):
-    return bytearray([(n >> (i * 8)) & 0xff for i in range(l - 1, -1, -1)])
+    return bytes([(n >> (i * 8)) & 0xff for i in range(l - 1, -1, -1)])
 
 __all__ = ['confirm_included', 'confirm_included_already_hashed', 'confirm_not_included', 
         'confirm_not_included_already_hashed', 'MerkleSet']
@@ -83,10 +81,9 @@ def flip_terminal(mystr):
     return r
 
 def hasher(mystr):
-    #r = bytearray(a2b_hex(blake2s(bytes(mystr), 32)))
-    r = bytearray(sha256(mystr).digest())
-    r[0] = MIDDLE | (r[0] & 0x3F)
-    return r
+    assert len(mystr) == 64
+    r = blake2s(mystr).digest()
+    return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
 def get_type(mybytes, pos):
     return mybytes[pos] & INVALID
@@ -123,21 +120,21 @@ def _find_implied_root_inclusion(depth, proof, val):
         return ERROR
     t = proof[0]
     if t == GIVE0:
-        if get_bit(val, depth) == 0 or len(pos) < 33:
+        if get_bit(val, depth) == 0 or len(proof) < 33:
             return ERROR
-        if len(pos) == 33:
-            return hasher(proof[1:] + val)
-        return hasher(proof[1:] + self._find_implied_root_inclusion(depth + 1, proof[33:], val))
+        if len(proof) == 33:
+            return hasher(proof[1:33] + val)
+        return hasher(proof[1:33] + _find_implied_root_inclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
         if get_bit(val, depth) == 1 or len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(val + proof[1:])
-        return hasher(_find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:])
+            return hasher(val + proof[1:33])
+        return hasher(_find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:33])
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             return ERROR
-        return hasher(BLANK + self._find_implied_root_inclusion(depth + 1, proof[1:], val))
+        return hasher(BLANK + _find_implied_root_inclusion(depth + 1, proof[1:], val))
     elif t == EMPTY1:
         if get_bit(val, depth) == 1:
             return ERROR
@@ -177,39 +174,45 @@ def _find_implied_root_exclusion(depth, proof, val):
     if t == GIVE0:
         if get_bit(val, depth) == 0 or len(proof) < 33:
             return ERROR
-        return hasher(proof[1:] + self._find_implied_root_exclusion(depth + 1, proof[33:], val))
+        return hasher(proof[1:33] + _find_implied_root_exclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
         if get_bit(val, depth) == 1 or len(proof) < 33:
             return ERROR
-        return hasher(self._find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:])
+        return hasher(_find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:33])
     elif t == GIVEBOTH:
         if len(proof) != 65:
             return ERROR
         if val == proof[1:33] or val == proof[33:]:
             return ERROR
+        if get_bit(val, depth) == 0:
+            if get_type(proof, 1) != TERMINAL:
+                return ERROR
+        else:
+            if get_type(proof, 33) != TERMINAL:
+                return ERROR
         return hasher(proof[1:])
     elif t == GIVE0EMPTY1:
         if get_bit(val, depth) != 1 or len(proof) != 33:
             return ERROR
-        return hasher(proof[1:] + BLANK)
+        return hasher(proof[1:33] + BLANK)
     elif t == GIVE1EMPTY0:
         if get_bit(val, depth) != 0 or len(proof) != 33:
             return ERROR
-        return hasher(BLANK + proof[1:])
+        return hasher(BLANK + proof[1:33])
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             if len(proof) != 33:
                 return ERROR
-            return hasher(BLANK + proof[1:])
+            return hasher(BLANK + proof[1:33])
         else:
-            return hasher(BLANK + self._find_implied_root_exclusion(depth + 1, proof[1:], val))
+            return hasher(BLANK + _find_implied_root_exclusion(depth + 1, proof[1:], val))
     elif t == EMPTY1:
         if get_bit(val, depth) == 1:
             if len(proof) != 33:
                 return ERROR
             return hasher(proof[1:] + BLANK)
         else:
-            return hasher(self._find_implied_root_inclusion(depth + 1, proof[1:], val) + BLANK)
+            return hasher(_find_implied_root_inclusion(depth + 1, proof[1:], val) + BLANK)
     else:
         return ERROR
 
@@ -1090,39 +1093,39 @@ class MerkleSet:
             else:
                 return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), buf)
         if block[pos:pos + 32] == tocheck:
-            buf.append(chr(GIVE1))
+            buf.append(bytes([GIVE1]))
             buf.append(block[pos + 32:pos + 64])
             return True
         if block[pos + 32:pos + 64] == tocheck:
-            buf.append(chr(GIVE0))
+            buf.append(bytes([GIVE0]))
             buf.append(block[pos:pos + 32])
             return True
         if get_bit(tocheck, depth) == 0:
             t = get_type(block, pos)
             if t == EMPTY:
-                buf.append(chr(EMPTY0))
+                buf.append(bytes([EMPTY0]))
                 buf.append(block[pos + 32:pos + 64])
                 return False
             if t == TERMINAL:
-                buf.append(chr(GIVEBOTH))
+                buf.append(bytes([GIVEBOTH]))
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(chr(GIVE1))
+            buf.append(bytes([GIVE1]))
             buf.append(block[pos + 32:pos + 64])
             return self._is_included_branch(tocheck, block, pos + 64, depth + 1, moddepth - 1, buf)
         else:
             t = get_type(block, pos + 32)
             if t == EMPTY:
-                buf.append(chr(EMPTY1))
+                buf.append(bytes([EMPTY1]))
                 buf.append(block[pos:pos + 32])
                 return False
             if t == TERMINAL:
-                buf.append(chr(GIVEBOTH))
+                buf.append(bytes([GIVEBOTH]))
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(chr(GIVE0))
+            buf.append(bytes([GIVE0]))
             buf.append(block[pos:pos + 32])
             return self._is_included_branch(tocheck, block, pos + 64 + self.subblock_lengths[moddepth], depth + 1, moddepth - 1, buf)
 
@@ -1130,39 +1133,39 @@ class MerkleSet:
     def _is_included_leaf(self, tocheck, block, pos, depth, buf):
         pos = 4 + pos * 68
         if block[pos:pos + 32] == tocheck:
-            buf.append(chr(GIVE1))
+            buf.append(bytes([GIVE1]))
             buf.append(block[pos + 32:pos + 64])
             return True
         if block[pos + 32:pos + 64] == tocheck:
-            buf.append(chr(GIVE0))
+            buf.append(bytes([GIVE0]))
             buf.append(block[pos:pos + 32])
             return True
         if get_bit(tocheck, depth) == 0:
             t = get_type(block, pos)
             if t == EMPTY:
-                buf.append(chr(EMPTY0))
+                buf.append(bytes([EMPTY0]))
                 buf.append(block[pos + 32:pos + 64])
                 return False
             if t == TERMINAL:
-                buf.append(chr(GIVEBOTH))
+                buf.append(bytes([GIVEBOTH]))
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(chr(GIVE1))
+            buf.append(bytes([GIVE1]))
             buf.append(block[pos + 32:pos + 64])
             return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]), depth + 1, buf)
         else:
             t = get_type(block, pos + 32)
             if t == EMPTY:
-                buf.append(chr(EMPTY1))
+                buf.append(bytes([EMPTY1]))
                 buf.append(block[pos:pos + 32])
                 return False
             if t == TERMINAL:
-                buf.append(chr(GIVEBOTH))
+                buf.append(bytes([GIVEBOTH]))
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(chr(GIVE0))
+            buf.append(bytes([GIVE0]))
             buf.append(block[pos:pos + 32])
             return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]), depth + 1, buf)
 
@@ -1226,10 +1229,10 @@ class TerminalNode:
         if ta == tb:
             if ta == 0:
                 return MiddleNode(self._make_middle(thinga, thingb, depth + 1), EmptyNode(depth + 1), depth)
-            return MiddleNode(EmptyNode(depth + 1), self._make_middle(thinga, thingb, depth))
+            return MiddleNode(EmptyNode(depth + 1), self._make_middle(thinga, thingb, depth + 1), depth)
         else:
             if ta == 0:
-                return MiddleNode(TerminalNode(thinga), TerminalNode(thingb), depth)
+                return MiddleNode(TerminalNode(thinga, depth + 1), TerminalNode(thingb, depth + 1), depth)
             return MiddleNode(TerminalNode(thingb, depth + 1), TerminalNode(thinga, depth + 1), depth)
 
     def remove(self, toremove):
@@ -1293,25 +1296,37 @@ class MiddleNode:
             if self.high.size == 0:
                 return self.low.is_included(tocheck)
             if tocheck == self.low.hash:
-                return True, chr(GIVE1) + self.high.hash
+                return True, bytes([GIVE1]) + self.high.hash
             if tocheck == self.high.hash:
-                return True, chr(GIVE0) + self.low.hash
-            return False, chr(GIVEBOTH) + self.low.hash + self.high.hash
+                return True, bytes([GIVE0]) + self.low.hash
+            return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
         b = get_bit(tocheck, self.depth)
         if b == 0:
             if self.low.size == 0:
-                return False, chr(EMPTY0) + self.high.hash
+                return False, bytes([EMPTY0]) + self.high.hash
+            if self.low.size == 1:
+                if tocheck == self.high.hash:
+                    return True, bytes([GIVE0]) + self.low.hash
+                if tocheck == self.low.hash:
+                    return True, bytes([GIVE1]) + self.high.hash
+                return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
             r, p = self.low.is_included(tocheck)
             if self.high.size == 0:
-                return r, chr(EMPTY1) + p
-            return r, chr(GIVE1) + self.high.hash + p
+                return r, bytes([EMPTY1]) + p
+            return r, bytes([GIVE1]) + self.high.hash + p
         else:
             if self.high.size == 0:
-                return False, chr(EMPTY1) + self.low.hash
+                return False, bytes([EMPTY1]) + self.low.hash
+            if self.high.size == 1:
+                if tocheck == self.high.hash:
+                    return True, bytes([GIVE0]) + self.low.hash
+                if tocheck == self.low.hash:
+                    return True, bytes([GIVE1]) + self.high.hash
+                return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
             r, p = self.high.is_included(tocheck)
             if self.low.size == 0:
-                return r, chr(EMPTY0) + p
-            return r, chr(GIVE0) + self.low.hash + p
+                return r, bytes([EMPTY0]) + p
+            return r, bytes([GIVE0]) + self.low.hash + p
 
     def audit(self):
         assert self.low.depth == self.depth + 1
@@ -1335,6 +1350,7 @@ def testref(num, ref):
         ref.audit()
         r, proof = ref.is_included_already_hashed(h)
         assert r
+        print('h', h)
         assert confirm_included_already_hashed(ref.get_root(), h, proof)
         roots.append(ref.root)
     for i in range(num):
