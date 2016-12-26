@@ -208,7 +208,7 @@ def _find_implied_root_exclusion(depth, proof, val):
                 return ERROR
             return hasher(proof[1:] + BLANK)
         else:
-            return hasher(_find_implied_root_inclusion(depth + 1, proof[1:], val) + BLANK)
+            return hasher(_find_implied_root_exclusion(depth + 1, proof[1:], val) + BLANK)
     else:
         return ERROR
 
@@ -1337,7 +1337,6 @@ def testref(num, ref):
     roots = []
     assert ref.get_root() == BLANK
     for h in hashes:
-        print('h', h)
         r, proof = ref.is_included_already_hashed(h)
         assert not r
         assert confirm_not_included_already_hashed(ref.get_root(), h, proof)
@@ -1346,10 +1345,10 @@ def testref(num, ref):
         r, proof = ref.is_included_already_hashed(h)
         assert r
         assert confirm_included_already_hashed(ref.get_root(), h, proof)
-        roots.append(ref.root)
+        roots.append(ref.get_root())
     for i in range(num):
         h = hashes[-i-1]
-        assert roots[-i-1] == ref.root
+        assert roots[-i-1] == ref.get_root()
         r, proof = ref.is_included_already_hashed(h)
         assert r
         assert confirm_included_already_hashed(ref.get_root(), h, proof)
