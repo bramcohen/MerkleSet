@@ -71,14 +71,12 @@ INVALIDATING = 5
 DONE = 6
 FULL = 7
 
-ERROR = bytearray([1] * 32)
-BLANK = bytearray([0] * 32)
+ERROR = bytes([1] * 32)
+BLANK = bytes([0] * 32)
 
 def flip_terminal(mystr):
     assert len(mystr) == 32
-    r = bytearray(mystr)
-    r[0] = TERMINAL | (r[0] & 0x3F)
-    return r
+    return bytes([TERMINAL | (mystr[0] & 0x3F)]) + mystr[1:]
 
 def hasher(mystr):
     assert len(mystr) == 64
@@ -102,7 +100,6 @@ def confirm_included_already_hashed(root, val, proof):
 
 def _confirm_included(root, val, proof):
     assert len(root) == 32
-    root = bytearray(root)
     a = get_type(root, 0)
     if a == TERMINAL:
         if len(proof) != 0:
@@ -120,13 +117,21 @@ def _find_implied_root_inclusion(depth, proof, val):
         return ERROR
     t = proof[0]
     if t == GIVE0:
-        if get_bit(val, depth) == 0 or len(proof) < 33:
+        if get_bit(val, depth) == 0:
+            if get_type(proof, 1) != TERMINAL or len(proof) != 33:
+                return ERROR
+            return hasher(proof[1:] + val)
+        if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
             return hasher(proof[1:33] + val)
         return hasher(proof[1:33] + _find_implied_root_inclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
-        if get_bit(val, depth) == 1 or len(proof) < 33:
+        if get_bit(val, depth) == 1:
+            if get_type(proof, 1) != TERMINAL or len(proof) != 33:
+                return ERROR
+            return hasher(val + proof[1:])
+        if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
             return hasher(val + proof[1:33])
@@ -150,7 +155,6 @@ def confirm_not_included_already_hashed(root, val, proof):
 
 def _confirm_not_included(root, val, proof):
     assert len(root) == 32 and len(val) == 32
-    root = bytearray(root)
     a = get_type(root, 0)
     if a == TERMINAL:
         if len(proof) != 0:
@@ -191,14 +195,6 @@ def _find_implied_root_exclusion(depth, proof, val):
             if get_type(proof, 33) != TERMINAL:
                 return ERROR
         return hasher(proof[1:])
-    elif t == GIVE0EMPTY1:
-        if get_bit(val, depth) != 1 or len(proof) != 33:
-            return ERROR
-        return hasher(proof[1:33] + BLANK)
-    elif t == GIVE1EMPTY0:
-        if get_bit(val, depth) != 0 or len(proof) != 33:
-            return ERROR
-        return hasher(BLANK + proof[1:33])
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             if len(proof) != 33:
@@ -1088,7 +1084,7 @@ class MerkleSet:
     # returns boolean, appends to buf
     def _is_included_branch(self, tocheck, block, pos, depth, moddepth, buf):
         if moddepth == 0:
-            if block[pos + 8:pos + 10] == bytearray([0xFF, 0xFF]):
+            if block[pos + 8:pos + 10] == bytes([0xFF, 0xFF]):
                 return self._is_included_branch(tocheck, self._ref(block[pos:pos + 8]), 8, depth + 1, len(self.subblock_lengths) - 1, buf)
             else:
                 return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), buf)
@@ -1259,7 +1255,6 @@ class MiddleNode:
             self.hash = hasher(low.hash + high.hash)
 
     def add(self, toadd):
-        toadd = bytearray(toadd)
         if get_bit(toadd, self.depth) == 0:
             r = self.low.add(toadd)
             if r == self.low:
@@ -1272,7 +1267,6 @@ class MiddleNode:
             return MiddleNode(self.low, r, self.depth)
 
     def remove(self, toremove):
-        toremove = bytearray(toremove)
         if get_bit(toremove, self.depth) == 0:
             r = self.low.remove(toremove)
             if r == self.low:
@@ -1343,6 +1337,7 @@ def testref(num, ref):
     roots = []
     assert ref.get_root() == BLANK
     for h in hashes:
+        print('h', h)
         r, proof = ref.is_included_already_hashed(h)
         assert not r
         assert confirm_not_included_already_hashed(ref.get_root(), h, proof)
@@ -1350,7 +1345,6 @@ def testref(num, ref):
         ref.audit()
         r, proof = ref.is_included_already_hashed(h)
         assert r
-        print('h', h)
         assert confirm_included_already_hashed(ref.get_root(), h, proof)
         roots.append(ref.root)
     for i in range(num):
