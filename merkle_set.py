@@ -1,10 +1,10 @@
 from hashlib import blake2s, sha256
 
 def from_bytes(f):
-    return int(f.encode('hex'), 16)
+    return int.from_bytes(f, 'big')
 
-def to_bytes(n, l):
-    return bytes([(n >> (i * 8)) & 0xff for i in range(l - 1, -1, -1)])
+def to_bytes(f, v):
+    return int.to_bytes(f, v, 'big')
 
 __all__ = ['confirm_included', 'confirm_included_already_hashed', 'confirm_not_included', 
         'confirm_not_included_already_hashed', 'MerkleSet']
@@ -73,6 +73,7 @@ FULL = 7
 
 ERROR = bytes([1] * 32)
 BLANK = bytes([0] * 32)
+JUNK = bytes([INVALID] * 32)
 
 def flip_terminal(mystr):
     assert len(mystr) == 32
@@ -118,7 +119,7 @@ def _find_implied_root_inclusion(depth, proof, val):
     t = proof[0]
     if t == GIVE0:
         if get_bit(val, depth) == 0:
-            if get_type(proof, 1) != TERMINAL or len(proof) != 33:
+            if len(proof) != 33 or get_type(proof, 1) != TERMINAL:
                 return ERROR
             return hasher(proof[1:] + val)
         if len(proof) < 33:
@@ -128,7 +129,7 @@ def _find_implied_root_inclusion(depth, proof, val):
         return hasher(proof[1:33] + _find_implied_root_inclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
         if get_bit(val, depth) == 1:
-            if get_type(proof, 1) != TERMINAL or len(proof) != 33:
+            if len(proof) != 33 or get_type(proof, 1) != TERMINAL:
                 return ERROR
             return hasher(val + proof[1:])
         if len(proof) < 33:
@@ -176,11 +177,11 @@ def _find_implied_root_exclusion(depth, proof, val):
         return ERROR
     t = proof[0]
     if t == GIVE0:
-        if get_bit(val, depth) == 0 or len(proof) < 33:
+        if len(proof) < 33 or get_bit(val, depth) == 0:
             return ERROR
         return hasher(proof[1:33] + _find_implied_root_exclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
-        if get_bit(val, depth) == 1 or len(proof) < 33:
+        if len(proof) < 33 or get_bit(val, depth) == 1:
             return ERROR
         return hasher(_find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:33])
     elif t == GIVEBOTH:
@@ -215,7 +216,7 @@ def _find_implied_root_exclusion(depth, proof, val):
 class MerkleSet:
     def __init__(self, depth, leaf_units):
         self.subblock_lengths = [10]
-        while len(subblock_lengths) <= depth:
+        while len(self.subblock_lengths) <= depth:
             self.subblock_lengths.append(64 + 2 * self.subblock_lengths[-1])
         self.leaf_units = leaf_units
         self.root = BLANK
@@ -223,9 +224,12 @@ class MerkleSet:
         self.pointers_to_arrays = {}
         self.rootblock = None
 
+    def audit(self):
+        pass
+
     def _allocate_branch(self):
         b = bytearray(8 + self.subblock_lengths[-1])
-        self.pointers_to_arrays[self._deref(branch)] = b
+        self.pointers_to_arrays[self._deref(b)] = b
         return b
 
     def _allocate_leaf(self):
@@ -290,7 +294,7 @@ class MerkleSet:
         elif t == TERMINAL:
             self.rootblock = self._allocate_branch()
             self._insert_branch([self.root, toadd], self.rootblock, 8, 0, len(self.subblock_lengths) - 1)
-            make_invalid(self.root, 0)
+            self.root = JUNK
         else:
             if self._add_to_branch(toadd, self.rootblock, 0) == INVALIDATING:
                 make_invalid(self.root, 0)
@@ -311,7 +315,7 @@ class MerkleSet:
             else:
                 return self._add_to_leaf(toadd, block, pos, nextblock, nextpos, depth)
         if get_bit(toadd, depth) == 0:
-            r = self._add_branch_inner(toadd, block, pos + 64, moddepth - 1)
+            r = self._add_to_branch_inner(toadd, block, pos + 64, depth + 1, moddepth - 1)
             if r == INVALIDATING:
                 if get_type(block, pos) != INVALID:
                     make_invalid(block, pos)
@@ -348,7 +352,7 @@ class MerkleSet:
             else:
                 return DONE
         else:
-            r = self._add_branch_inner(toadd, block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+            r = self._add_to_branch_inner(toadd, block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
             if r == INVALIDATING:
                 if get_type(block, pos + 32) != INVALID:
                     make_invalid(block, pos + 32)
@@ -412,7 +416,7 @@ class MerkleSet:
                 self._insert_branch(things, block, pos + 64, depth + 1, moddepth - 1)
                 make_invalid(block, pos)
             else:
-                self._insert_branch(things, block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                self._insert_branch(things, block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
                 make_invalid(block, pos + 32)
         else:
             if bits[0] == bits[1]:
@@ -1299,8 +1303,6 @@ class MiddleNode:
             if self.low.size == 0:
                 return False, bytes([EMPTY0]) + self.high.hash
             if self.low.size == 1:
-                if tocheck == self.high.hash:
-                    return True, bytes([GIVE0]) + self.low.hash
                 if tocheck == self.low.hash:
                     return True, bytes([GIVE1]) + self.high.hash
                 return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
@@ -1314,8 +1316,6 @@ class MiddleNode:
             if self.high.size == 1:
                 if tocheck == self.high.hash:
                     return True, bytes([GIVE0]) + self.low.hash
-                if tocheck == self.low.hash:
-                    return True, bytes([GIVE1]) + self.high.hash
                 return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
             r, p = self.high.is_included(tocheck)
             if self.low.size == 0:
@@ -1331,33 +1331,59 @@ class MiddleNode:
         self.high.audit()            
 
 from random import getrandbits, seed
+from traceback import print_exc
 
-def testref(num, ref):
-    hashes = [to_bytes(getrandbits(256), 32) for i in range(num)]
+def _testmset(hashes, mset, oldroots = None):
     roots = []
-    assert ref.get_root() == BLANK
+    assert mset.get_root() == BLANK
     for h in hashes:
-        r, proof = ref.is_included_already_hashed(h)
+        r, proof = mset.is_included_already_hashed(h)
         assert not r
-        assert confirm_not_included_already_hashed(ref.get_root(), h, proof)
-        ref.add_already_hashed(h)
-        ref.audit()
-        r, proof = ref.is_included_already_hashed(h)
-        assert r
-        assert confirm_included_already_hashed(ref.get_root(), h, proof)
-        roots.append(ref.get_root())
-    for i in range(num):
+        assert confirm_not_included_already_hashed(mset.get_root(), h, proof)
+        assert not confirm_included_already_hashed(mset.get_root(), h, proof)
+        for j in range(len(proof) - 1):
+            assert not confirm_not_included_already_hashed(mset.get_root(), h, proof[:j])
+        assert not confirm_not_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
+        for i in range(2):
+            mset.add_already_hashed(h)
+            mset.audit()
+            r, proof = mset.is_included_already_hashed(h)
+            assert r
+            assert confirm_included_already_hashed(mset.get_root(), h, proof)
+            assert not confirm_not_included_already_hashed(mset.get_root(), h, proof)
+            for j in range(len(proof) - 1):
+                assert not confirm_included_already_hashed(mset.get_root(), h, proof[:j])
+            assert not confirm_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
+        roots.append(mset.get_root())
+        if oldroots is not None:
+            assert roots[-1] == oldroots
+    mset.audit()
+    for i in range(len(hashes)):
         h = hashes[-i-1]
-        assert roots[-i-1] == ref.get_root()
-        r, proof = ref.is_included_already_hashed(h)
+        assert roots[-i-1] == mset.get_root()
+        r, proof = mset.is_included_already_hashed(h)
         assert r
-        assert confirm_included_already_hashed(ref.get_root(), h, proof)
-        ref.remove_already_hashed(h)
-        ref.audit()
-        r, proof = ref.is_included_already_hashed(h)
-        assert not r
-        assert confirm_not_included_already_hashed(ref.get_root(), h, proof)
-    assert ref.get_root() == BLANK
+        assert confirm_included_already_hashed(mset.get_root(), h, proof)
+        assert not confirm_not_included_already_hashed(mset.get_root(), h, proof)
+        for j in range(len(proof) - 1):
+            assert not confirm_included_already_hashed(mset.get_root(), h, proof[:j])
+        assert not confirm_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
+        for i in range(2):
+            mset.remove_already_hashed(h)
+            mset.audit()
+            r, proof = mset.is_included_already_hashed(h)
+            assert not r
+            assert confirm_not_included_already_hashed(mset.get_root(), h, proof)
+            assert not confirm_included_already_hashed(mset.get_root(), h, proof)
+            for j in range(len(proof) - 1):
+                assert not confirm_not_included_already_hashed(mset.get_root(), h, proof[:j])
+            assert not confirm_not_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
+    assert mset.get_root() == BLANK
 
-seed(3)
-testref(100, ReferenceMerkleSet())
+def testboth():
+    seed(3)
+    hashes = [to_bytes(getrandbits(256), 32) for i in range(100)]
+    roots = _testmset(hashes, ReferenceMerkleSet())
+    #_testmset(hashes, MerkleSet(6, 64), roots)
+
+testboth()
