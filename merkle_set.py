@@ -81,7 +81,25 @@ def flip_terminal(mystr):
 
 def hasher(mystr):
     assert len(mystr) == 64
-    r = blake2s(mystr).digest()
+    r = None
+    if mystr[:32] == BLANK:
+        v = mystr[63] & 0xF
+        if v == 0 or v == 0xF:
+            v = mystr[63] & 0xF0
+            if v != 0 and v != 0xF0:
+                r = mystr[32:63] + bytes([mystr[63] & 0x0F])
+        else:
+            r = mystr[32:63] + bytes([mystr[63] & 0xF0])
+    elif mystr[32:] == BLANK:
+        v = mystr[31] & 0xF
+        if v == 0 or v == 0xF:
+            v = mystr[31] & 0xF0
+            if v != 0 and v != 0xF0:
+                r = mystr[:31] + bytes([mystr[31] | 0xF0])
+        else:
+            r = mystr[:31] + bytes([mystr[31] | 0x0F])
+    if r is None:
+        r = blake2s(mystr).digest()
     return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
 def get_type(mybytes, pos):
@@ -91,7 +109,8 @@ def make_invalid(mybytes, pos):
     mybytes[pos] |= INVALID
 
 def get_bit(mybytes, pos):
-    return (mybytes[-(pos // 8) - 1] >> (pos % 8)) & 1
+    pos += 2
+    return (mybytes[pos // 8] >> (7 - (pos % 8))) & 1
 
 def confirm_included(root, val, proof):
     return confirm_included_already_hashed(root, sha256(val).digest(), proof)
@@ -112,7 +131,7 @@ def _confirm_included(root, val, proof):
         return False
 
 def _find_implied_root_inclusion(depth, proof, val):
-    if depth > 220:
+    if depth > 240:
         return ERROR
     if len(proof) == 0:
         return ERROR
@@ -171,7 +190,7 @@ def _confirm_not_included(root, val, proof):
         return False
 
 def _find_implied_root_exclusion(depth, proof, val):
-    if depth > 220:
+    if depth > 240:
         return ERROR
     if len(proof) == 0:
         return ERROR
