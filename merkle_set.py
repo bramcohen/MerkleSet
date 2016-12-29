@@ -80,13 +80,13 @@ def flip_terminal(mystr):
     assert len(mystr) == 32
     return bytes([TERMINAL | (mystr[0] & 0x3F)]) + mystr[1:]
 
-def hasher(mystr):
+def hasher(mystr, can_terminate = True):
     assert len(mystr) == 64
     r = None
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
-    if t0 not in (EMPTY, TERMINAL, MIDDLE) or t1 not in (EMPTY, TERMINAL, MIDDLE):
+    if t0 == INVALID or t1 == INVALID:
         return ERROR
-    if t0 == TERMINAL and t1 == TERMINAL and mystr[:32] > mystr[32:]:
+    if t0 == TERMINAL and t1 == TERMINAL and (mystr[:32] > mystr[32:] or not can_terminate):
         return ERROR
     if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
         return ERROR
@@ -138,7 +138,7 @@ def _confirm_included(root, val, proof):
     else:
         return False
 
-def _find_implied_root_inclusion(depth, proof, val):
+def _find_implied_root_inclusion(depth, proof, val, can_terminate = True):
     if depth > 240:
         return ERROR
     if len(proof) == 0:
@@ -148,30 +148,30 @@ def _find_implied_root_inclusion(depth, proof, val):
         if get_bit(val, depth) == 0:
             if len(proof) != 33 or get_type(proof, 1) != TERMINAL:
                 return ERROR
-            return hasher(proof[1:] + val)
+            return hasher(proof[1:] + val, can_terminate)
         if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(proof[1:33] + val)
+            return hasher(proof[1:33] + val, can_terminate)
         return hasher(proof[1:33] + _find_implied_root_inclusion(depth + 1, proof[33:], val))
     elif t == GIVE1:
         if get_bit(val, depth) == 1:
             if len(proof) != 33 or get_type(proof, 1) != TERMINAL:
                 return ERROR
-            return hasher(val + proof[1:])
+            return hasher(val + proof[1:], can_terminate)
         if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(val + proof[1:33])
+            return hasher(val + proof[1:33], can_terminate)
         return hasher(_find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:33])
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             return ERROR
-        return hasher(BLANK + _find_implied_root_inclusion(depth + 1, proof[1:], val))
+        return hasher(BLANK + _find_implied_root_inclusion(depth + 1, proof[1:], val, False))
     elif t == EMPTY1:
         if get_bit(val, depth) == 1:
             return ERROR
-        return hasher(_find_implied_root_inclusion(depth + 1, proof[1:], val) + BLANK)
+        return hasher(_find_implied_root_inclusion(depth + 1, proof[1:], val, False) + BLANK)
     else:
         return ERROR
 
@@ -197,7 +197,7 @@ def _confirm_not_included(root, val, proof):
     else:
         return False
 
-def _find_implied_root_exclusion(depth, proof, val):
+def _find_implied_root_exclusion(depth, proof, val, can_terminate = True):
     if depth > 240:
         return ERROR
     if len(proof) == 0:
@@ -222,21 +222,21 @@ def _find_implied_root_exclusion(depth, proof, val):
         else:
             if get_type(proof, 33) != TERMINAL:
                 return ERROR
-        return hasher(proof[1:])
+        return hasher(proof[1:], can_terminate)
     elif t == EMPTY0:
         if get_bit(val, depth) == 0:
             if len(proof) != 33:
                 return ERROR
             return hasher(BLANK + proof[1:33])
         else:
-            return hasher(BLANK + _find_implied_root_exclusion(depth + 1, proof[1:], val))
+            return hasher(BLANK + _find_implied_root_exclusion(depth + 1, proof[1:], val, False))
     elif t == EMPTY1:
         if get_bit(val, depth) == 1:
             if len(proof) != 33:
                 return ERROR
             return hasher(proof[1:] + BLANK)
         else:
-            return hasher(_find_implied_root_exclusion(depth + 1, proof[1:], val) + BLANK)
+            return hasher(_find_implied_root_exclusion(depth + 1, proof[1:], val, False) + BLANK)
     else:
         return ERROR
 
