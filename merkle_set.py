@@ -1,4 +1,5 @@
 from hashlib import blake2s, sha256
+from os import urandom
 
 def from_bytes(f):
     return int.from_bytes(f, 'big')
@@ -71,7 +72,7 @@ INVALIDATING = 5
 DONE = 6
 FULL = 7
 
-ERROR = bytes([1] * 32)
+ERROR = urandom(32)
 BLANK = bytes([0] * 32)
 JUNK = bytes([INVALID] * 32)
 
@@ -82,6 +83,13 @@ def flip_terminal(mystr):
 def hasher(mystr):
     assert len(mystr) == 64
     r = None
+    t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
+    if t0 not in (EMPTY, TERMINAL, MIDDLE) or t1 not in (EMPTY, TERMINAL, MIDDLE):
+        return ERROR
+    if t0 == TERMINAL and t1 == TERMINAL and mystr[:32] > mystr[32:]:
+        return ERROR
+    if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
+        return ERROR
     if mystr[:32] == BLANK:
         v = mystr[63] & 0xF
         if v == 0 or v == 0xF:
