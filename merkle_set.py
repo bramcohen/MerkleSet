@@ -80,13 +80,30 @@ def flip_terminal(mystr):
     assert len(mystr) == 32
     return bytes([TERMINAL | (mystr[0] & 0x3F)]) + mystr[1:]
 
-def hasher(mystr, can_terminate = True):
+def hasher(mystr, can_terminate = True, bits = None):
     assert len(mystr) == 64
     r = None
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
     if t0 == INVALID or t1 == INVALID:
         return ERROR
-    if t0 == TERMINAL and t1 == TERMINAL and (mystr[:32] > mystr[32:] or not can_terminate):
+    if bits is not None:
+        if t0 == TERMINAL:
+            s0 = mystr[:32]
+            for pos, v in enumerate(bits):
+                if get_bit(s0, pos) != v:
+                    return ERROR
+            if t1 != TERMINAL:
+                if get_bit(s0, len(bits)) != 0:
+                    return ERROR
+        if t1 == TERMINAL:
+            s1 = mystr[32:]
+            for pos, v in enumerate(bits):
+                if get_bit(s1, pos) != v:
+                    return ERROR
+            if t0 != TERMINAL:
+                if get_bit(s1, len(bits)) != 1:
+                    return ERROR
+    if t0 == TERMINAL and t1 == TERMINAL and (mystr[:32] >= mystr[32:] or not can_terminate):
         return ERROR
     if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
         return ERROR
@@ -134,44 +151,40 @@ def _confirm_included(root, val, proof):
             return False
         return root == val
     elif a == MIDDLE:
-        return root == _find_implied_root_inclusion(0, proof, val)
+        return root == _find_implied_root_inclusion([], proof, val)
     else:
         return False
 
-def _find_implied_root_inclusion(depth, proof, val, can_terminate = True):
-    if depth > 240:
+def _find_implied_root_inclusion(bits, proof, val, can_terminate = True):
+    if len(bits) > 240:
         return ERROR
     if len(proof) == 0:
         return ERROR
     t = proof[0]
     if t == GIVE0:
-        if get_bit(val, depth) == 0:
-            if len(proof) != 33 or get_type(proof, 1) != TERMINAL:
+        if get_bit(val, len(bits)) == 0:
+            if len(proof) != 33:
                 return ERROR
-            return hasher(proof[1:] + val, can_terminate)
+            return hasher(proof[1:] + val, can_terminate, bits)
         if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(proof[1:33] + val, can_terminate)
-        return hasher(proof[1:33] + _find_implied_root_inclusion(depth + 1, proof[33:], val))
+            return hasher(proof[1:33] + val, can_terminate, bits)
+        return hasher(proof[1:33] + _find_implied_root_inclusion(bits + [1], proof[33:], val), False, bits)
     elif t == GIVE1:
-        if get_bit(val, depth) == 1:
-            if len(proof) != 33 or get_type(proof, 1) != TERMINAL:
+        if get_bit(val, len(bits)) == 1:
+            if len(proof) != 33:
                 return ERROR
-            return hasher(val + proof[1:], can_terminate)
+            return hasher(val + proof[1:], can_terminate, bits)
         if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(val + proof[1:33], can_terminate)
-        return hasher(_find_implied_root_inclusion(depth + 1, proof[33:], val) + proof[1:33])
+            return hasher(val + proof[1:33], can_terminate, bits)
+        return hasher(_find_implied_root_inclusion(bits + [0], proof[33:], val) + proof[1:33], False, bits)
     elif t == EMPTY0:
-        if get_bit(val, depth) == 0:
-            return ERROR
-        return hasher(BLANK + _find_implied_root_inclusion(depth + 1, proof[1:], val, False))
+        return hasher(BLANK + _find_implied_root_inclusion(bits + [1], proof[1:], val, False), False, bits)
     elif t == EMPTY1:
-        if get_bit(val, depth) == 1:
-            return ERROR
-        return hasher(_find_implied_root_inclusion(depth + 1, proof[1:], val, False) + BLANK)
+        return hasher(_find_implied_root_inclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits)
     else:
         return ERROR
 
@@ -193,50 +206,50 @@ def _confirm_not_included(root, val, proof):
             return False
         return True
     elif a == MIDDLE:
-        return root == _find_implied_root_exclusion(0, proof, val)
+        return root == _find_implied_root_exclusion([], proof, val)
     else:
         return False
 
-def _find_implied_root_exclusion(depth, proof, val, can_terminate = True):
-    if depth > 240:
+def _find_implied_root_exclusion(bits, proof, val, can_terminate = True):
+    if len(bits) > 240:
         return ERROR
     if len(proof) == 0:
         return ERROR
     t = proof[0]
     if t == GIVE0:
-        if len(proof) < 33 or get_bit(val, depth) == 0:
+        if len(proof) < 33 or get_bit(val, len(bits)) == 0:
             return ERROR
-        return hasher(proof[1:33] + _find_implied_root_exclusion(depth + 1, proof[33:], val))
+        return hasher(proof[1:33] + _find_implied_root_exclusion(bits + [1], proof[33:], val), can_terminate, bits)
     elif t == GIVE1:
-        if len(proof) < 33 or get_bit(val, depth) == 1:
+        if len(proof) < 33 or get_bit(val, len(bits)) == 1:
             return ERROR
-        return hasher(_find_implied_root_exclusion(depth + 1, proof[33:], val) + proof[1:33])
+        return hasher(_find_implied_root_exclusion(bits + [0], proof[33:], val) + proof[1:33], can_terminate, bits)
     elif t == GIVEBOTH:
         if len(proof) != 65:
             return ERROR
         if val == proof[1:33] or val == proof[33:]:
             return ERROR
-        if get_bit(val, depth) == 0:
+        if get_bit(val, len(bits)) == 0:
             if get_type(proof, 1) != TERMINAL:
                 return ERROR
         else:
             if get_type(proof, 33) != TERMINAL:
                 return ERROR
-        return hasher(proof[1:], can_terminate)
+        return hasher(proof[1:], can_terminate, bits)
     elif t == EMPTY0:
-        if get_bit(val, depth) == 0:
+        if get_bit(val, len(bits)) == 0:
             if len(proof) != 33:
                 return ERROR
-            return hasher(BLANK + proof[1:33])
+            return hasher(BLANK + proof[1:33], False, bits)
         else:
-            return hasher(BLANK + _find_implied_root_exclusion(depth + 1, proof[1:], val, False))
+            return hasher(BLANK + _find_implied_root_exclusion(bits + [1], proof[1:], val, False), False, bits)
     elif t == EMPTY1:
-        if get_bit(val, depth) == 1:
+        if get_bit(val, len(bits)) == 1:
             if len(proof) != 33:
                 return ERROR
-            return hasher(proof[1:] + BLANK)
+            return hasher(proof[1:] + BLANK, False, bits)
         else:
-            return hasher(_find_implied_root_exclusion(depth + 1, proof[1:], val, False) + BLANK)
+            return hasher(_find_implied_root_exclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits)
     else:
         return ERROR
 
@@ -252,6 +265,25 @@ class MerkleSet:
         self.rootblock = None
 
     def audit(self):
+        pass
+        #check the root
+        #allblocks = set()
+        #self._audit_branch(self.rootblock, 0, allblocks)
+        #assert allblocks == set(self.pointers_to_arrays.values())
+
+    def _audit_branch(self, branch, depth, allblocks):
+        pass
+
+    def _audit_branch_inner(self, branch, pos, depth, moddepth, outputs, allblocks):
+        pass
+
+    def _audit_branch_inner_empty(self, branch, pos, moddepth, allblocks):
+        pass
+
+    def _audit_leaf(self, leaf, pos, depth):
+        pass
+
+    def _audit_whole_leaf(self, leaf, inputs):
         pass
 
     def _allocate_branch(self):
@@ -1357,60 +1389,43 @@ class MiddleNode:
         self.low.audit()
         self.high.audit()            
 
-from random import getrandbits, seed
-from traceback import print_exc
-
-def _testmset(hashes, mset, oldroots = None):
+def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
+    hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
     roots = []
+    proofss = []
     assert mset.get_root() == BLANK
-    for h in hashes:
-        r, proof = mset.is_included_already_hashed(h)
-        assert not r
-        assert confirm_not_included_already_hashed(mset.get_root(), h, proof)
-        assert not confirm_included_already_hashed(mset.get_root(), h, proof)
-        for j in range(len(proof) - 1):
-            assert not confirm_not_included_already_hashed(mset.get_root(), h, proof[:j])
-        assert not confirm_not_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
-        for i in range(2):
-            mset.add_already_hashed(h)
-            mset.audit()
-            r, proof = mset.is_included_already_hashed(h)
-            assert r
-            assert confirm_included_already_hashed(mset.get_root(), h, proof)
-            assert not confirm_not_included_already_hashed(mset.get_root(), h, proof)
-            for j in range(len(proof) - 1):
-                assert not confirm_included_already_hashed(mset.get_root(), h, proof[:j])
-            assert not confirm_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
+    mset.audit()
+    for i in range(numhashes):
         roots.append(mset.get_root())
         if oldroots is not None:
-            assert roots[-1] == oldroots
-    mset.audit()
-    for i in range(len(hashes)):
-        h = hashes[-i-1]
-        assert roots[-i-1] == mset.get_root()
-        r, proof = mset.is_included_already_hashed(h)
-        assert r
-        assert confirm_included_already_hashed(mset.get_root(), h, proof)
-        assert not confirm_not_included_already_hashed(mset.get_root(), h, proof)
-        for j in range(len(proof) - 1):
-            assert not confirm_included_already_hashed(mset.get_root(), h, proof[:j])
-        assert not confirm_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
-        for i in range(2):
-            mset.remove_already_hashed(h)
-            mset.audit()
-            r, proof = mset.is_included_already_hashed(h)
-            assert not r
-            assert confirm_not_included_already_hashed(mset.get_root(), h, proof)
-            assert not confirm_included_already_hashed(mset.get_root(), h, proof)
-            for j in range(len(proof) - 1):
-                assert not confirm_not_included_already_hashed(mset.get_root(), h, proof[:j])
-            assert not confirm_not_included_already_hashed(mset.get_root(), h, proof + bytes([20]))
-    assert mset.get_root() == BLANK
+            assert oldroots[i] == roots[i]
+        proofs = []
+        for j in range(numhashes):
+            r, proof = mset.is_included_already_hashed(hashes[j])
+            if oldproofss is not None:
+                assert oldproofss[i][j] == proof
+            proofs.append(proof)
+            if j < i:
+                assert r
+                assert confirm_included_already_hashed(roots[-1], hashes[j], proof)
+            else:
+                assert not r
+                assert confirm_not_included_already_hashed(roots[-1], hashes[j], proof)
+        mset.add_already_hashed(hashes[i])
+        mset.audit()
+        proofss.append(proofs)
+    for i in range(numhashes - 1, -1, -1):
+        mset.remove_already_hashed(hashes[i])
+        assert roots[i] == mset.get_root()
+        mset.audit()
+        for j in range(numhashes):
+            r, proof = mset.is_included_already_hashed(hashes[j])
+            assert r == (j < i)
+            assert proof == proofss[i][j]
+    return roots, proofss
 
-def testboth():
-    seed(3)
-    hashes = [to_bytes(getrandbits(256), 32) for i in range(100)]
-    roots = _testmset(hashes, ReferenceMerkleSet())
-    #_testmset(hashes, MerkleSet(6, 64), roots)
+def testboth(num):
+    roots, proofss = _testmset(num, ReferenceMerkleSet())
+    #_testmset(num, MerkleSet(6, 64), roots, proofss)
 
-testboth()
+testboth(100)
