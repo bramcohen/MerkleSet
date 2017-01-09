@@ -107,24 +107,26 @@ def hasher(mystr, can_terminate = True, bits = None):
         return ERROR
     if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
         return ERROR
-    if mystr[:32] == BLANK:
+    if t0 == EMPTY:
+        assert mystr[:32] == BLANK
+        assert t1 != EMPTY
         v = mystr[63] & 0xF
         if v == 0 or v == 0xF:
             v = mystr[63] & 0xF0
             if v != 0 and v != 0xF0:
-                r = mystr[32:63] + bytes([mystr[63] & 0x0F])
+                return mystr[32:63] + bytes([mystr[63] & 0x0F])
         else:
-            r = mystr[32:63] + bytes([mystr[63] & 0xF0])
-    elif mystr[32:] == BLANK:
+            return mystr[32:63] + bytes([mystr[63] & 0xF0])
+    elif t1 == EMPTY:
+        assert mystr[32:] == BLANK
         v = mystr[31] & 0xF
         if v == 0 or v == 0xF:
             v = mystr[31] & 0xF0
             if v != 0 and v != 0xF0:
-                r = mystr[:31] + bytes([mystr[31] | 0xF0])
+                return mystr[:31] + bytes([mystr[31] | 0xF0])
         else:
-            r = mystr[:31] + bytes([mystr[31] | 0x0F])
-    if r is None:
-        r = blake2s(mystr).digest()
+            return mystr[:31] + bytes([mystr[31] | 0x0F])
+    r = blake2s(mystr).digest()
     return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
 def get_type(mybytes, pos):
