@@ -82,7 +82,6 @@ def flip_terminal(mystr):
 
 def hasher(mystr, can_terminate = True, bits = None):
     assert len(mystr) == 64
-    r = None
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
     if t0 == INVALID or t1 == INVALID:
         return ERROR
@@ -267,26 +266,119 @@ class MerkleSet:
         self.rootblock = None
 
     def audit(self):
-        pass
-        #check the root
-        #allblocks = set()
-        #self._audit_branch(self.rootblock, 0, allblocks)
-        #assert allblocks == set(self.pointers_to_arrays.values())
+        t = get_type(self.root, 0)
+        if t == EMPTY:
+            assert self.root == BLANK
+            assert self.rootblock == None
+            assert len(self.pointers_to_arrays) == 0
+        elif t == TERMINAL:
+            assert self.rootblock == None
+            assert len(self.pointers_to_arrays) == 0
+        else:
+            allblocks = set()
+            e = (self.root if t == MIDDLE else None)
+            self._audit_branch(self._deref(self.rootblock), 0, allblocks, e)
+            assert allblocks == set(self.pointers_to_arrays.values())
 
-    def _audit_branch(self, branch, depth, allblocks):
-        pass
+    def _audit_branch(self, branch, depth, allblocks, expected):
+        assert branch not in allblocks
+        allblocks.add(branch)
+        outputs = {}
+        branch = self._ref(branch)
+        self._audit_branch_inner(branch, 8, depth, len(self.subblock_lengths) - 1, outputs, allblocks, expected)
+        active = branch[:8]
+        if active != bytes(8):
+            assert active in outputs
+        for leaf, positions in outputs.items():
+            assert leaf not in allblocks
+            allblocks.add(leaf)
+            self._audit_whole_leaf(leaf, positions)
 
-    def _audit_branch_inner(self, branch, pos, depth, moddepth, outputs, allblocks):
-        pass
+    def _audit_branch_inner(self, branch, pos, depth, moddepth, outputs, allblocks, expected):
+        if moddepth == 0:
+            pos = from_bytes(branch[pos + 8:pos + 10])
+            output = branch[pos:pos + 8]
+            if pos == 0xFF:
+                self._audit_branch(output, depth, allblocks, expected)
+            else:
+                outputs.get(output, []).append((pos, expected))
+        t0 = get_type(branch, pos)
+        t1 = get_type(branch, pos + 32)
+        if t0 != INVALID and t1 != INVALID:
+            assert hasher(branch[pos:pos + 64]) == expected
+        else:
+            assert expected is None
+        if t0 == EMPTY:
+            assert t1 != EMPTY and t1 != TERMINAL
+            assert branch[pos:pos + 32] == BLANK
+            self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
+        elif t0 == TERMINAL:
+            assert t1 != EMPTY
+            self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
+        else:
+            e = (branch[pos:pos + 32] if t0 == MIDDLE else None)
+            self._audit_branch_inner(branch, pos + 64, depth + 1, moddepth - 1, outputs, allblocks, e)
+        if t1 == EMPTY:
+            assert branch[pos + 32:pos + 64] == BLANK
+            self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+        elif t1 == TERMINAL:
+            self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+        else:
+            e = (branch[pos + 32:pos + 64] if t1 == MIDDLE else None)
+            assert self._audit_branch_inner(branch, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, outputs, allblocks, e)
 
-    def _audit_branch_inner_empty(self, branch, pos, moddepth, allblocks):
-        pass
-
-    def _audit_leaf(self, leaf, pos, depth):
-        pass
+    def _audit_branch_inner_empty(self, branch, pos, moddepth):
+        if moddepth == 0:
+            assert branch[pos:pos + 10] == bytes(10)
+            return
+        assert branch[pos:pos + 64] == bytes(64)
+        self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
+        self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth])
 
     def _audit_whole_leaf(self, leaf, inputs):
-        pass
+        leaf = self._ref(leaf)
+        assert len(inputs) == from_bytes(leaf[2:4])
+        mycopy = self.allocate_leaf()
+        for pos, expected in inputs:
+            self._audit_whole_leaf_inner(leaf, mycopy, pos, expected)
+        i = from_bytes(leaf[:2])
+        while i != 0xFF:
+            nexti = from_bytes(leaf[4 + i * 68:4 + i * 68 + 2])
+            assert mycopy[4 + i * 68:4 + i * 68 + 68] == bytes(68)
+            mycopy[4 + i * 68:4 + i * 68 + 2] = to_bytes(i, 2)
+            i = nexti
+        assert mycopy[4:] == leaf[4:]
+        self._deallocate(mycopy)
+
+    def _audit_whole_leaf_inner(self, leaf, mycopy, pos, expected):
+        rpos = 4 + pos * 68
+        assert mycopy[rpos:rpos + 68] == bytes(68)
+        mycopy[rpos:rpos + 68] = leaf[rpos:rpos + 68]
+        t0 = get_type(leaf, rpos)
+        t1 = get_type(leaf, rpos + 32)
+        if t0 != INVALID and t1 != INVALID:
+            assert hasher(leaf[rpos:rpos + 64]) == expected
+        else:
+            assert expected == None
+        if t0 == EMPTY:
+            assert t1 != EMPTY
+            assert t1 != MIDDLE
+            assert leaf[rpos:rpos + 32] == BLANK
+            assert leaf[rpos + 64:rpos + 66] == bytes(2)
+        elif t0 == TERMINAL:
+            assert t1 != EMPTY
+            assert leaf[rpos + 64:rpos + 66] == bytes(2)
+        else:
+            e = (leaf[rpos:rpos + 32] if t0 == MIDDLE else None)
+            self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 64:rpos + 66]), e)
+        if t1 == EMPTY:
+            assert leaf[rpos + 32:rpos + 64] == BLANK
+            assert leaf[rpos + 66:rpos + 68] == bytes(2)
+        elif t1 == TERMINAL:
+            assert leaf[rpos + 66:rpos + 68] == bytes(2)
+        else:
+            e = (leaf[rpos + 32:rpos + 64] if t1 == MIDDLE else None)
+            self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 66:rpos + 68]), e)
 
     def _allocate_branch(self):
         b = bytearray(8 + self.subblock_lengths[-1])
@@ -1407,27 +1499,33 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
             if oldproofss is not None:
                 assert oldproofss[i][j] == proof
             proofs.append(proof)
-            if j < i:
-                assert r
-                assert confirm_included_already_hashed(roots[-1], hashes[j], proof)
-            else:
-                assert not r
-                assert confirm_not_included_already_hashed(roots[-1], hashes[j], proof)
+            assert r == (j < i)
+            assert confirm_included_already_hashed(roots[-1], hashes[j], proof) == r
+            assert confirm_not_included_already_hashed(roots[-1], hashes[j], proof) == (not r)
+        if i > 0:
+            mset.add_already_hashed(hashes[i-1])
+            mset.audit()
+            assert mset.get_root() == roots[i]
+            for j in range(numhashes):
+                r, proof = mset.is_included_already_hashed(hashes[j])
+                assert proof == proofs[j]
+                assert r == (j < i)
         mset.add_already_hashed(hashes[i])
         mset.audit()
         proofss.append(proofs)
     for i in range(numhashes - 1, -1, -1):
-        mset.remove_already_hashed(hashes[i])
-        assert roots[i] == mset.get_root()
-        mset.audit()
-        for j in range(numhashes):
-            r, proof = mset.is_included_already_hashed(hashes[j])
-            assert r == (j < i)
-            assert proof == proofss[i][j]
+        for k in range(2):
+            mset.remove_already_hashed(hashes[i])
+            assert roots[i] == mset.get_root()
+            mset.audit()
+            for j in range(numhashes):
+                r, proof = mset.is_included_already_hashed(hashes[j])
+                assert r == (j < i)
+                assert proof == proofss[i][j]
     return roots, proofss
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    #_testmset(num, MerkleSet(6, 64), roots, proofss)
+    _testmset(num, MerkleSet(6, 64), roots, proofss)
 
 testboth(100)
