@@ -72,7 +72,7 @@ INVALIDATING = 5
 DONE = 6
 FULL = 7
 
-ERROR = urandom(32)
+ERROR = bytes([INVALID]) + urandom(31)
 BLANK = bytes([0] * 32)
 JUNK = bytes([INVALID] * 32)
 
@@ -80,35 +80,45 @@ def flip_terminal(mystr):
     assert len(mystr) == 32
     return bytes([TERMINAL | (mystr[0] & 0x3F)]) + mystr[1:]
 
-def hasher(mystr, can_terminate = True, bits = None):
+def hasher(mystr, can_terminate = True, bits = None, can_fail = False):
     assert len(mystr) == 64
+    if mystr[:32] == ERROR or mystr[32:] == ERROR:
+        return ERROR
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
     if t0 == INVALID or t1 == INVALID:
+        assert can_fail
         return ERROR
     if bits is not None:
         if t0 == TERMINAL:
             s0 = mystr[:32]
             for pos, v in enumerate(bits):
                 if get_bit(s0, pos) != v:
+                    assert can_fail
                     return ERROR
             if t1 != TERMINAL:
                 if get_bit(s0, len(bits)) != 0:
+                    assert can_fail
                     return ERROR
         if t1 == TERMINAL:
             s1 = mystr[32:]
             for pos, v in enumerate(bits):
                 if get_bit(s1, pos) != v:
+                    assert can_fail
                     return ERROR
             if t0 != TERMINAL:
                 if get_bit(s1, len(bits)) != 1:
+                    assert can_fail
                     return ERROR
     if t0 == TERMINAL and t1 == TERMINAL and (mystr[:32] >= mystr[32:] or not can_terminate):
+        assert can_fail
         return ERROR
     if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
+        assert can_fail
         return ERROR
     if t0 == EMPTY:
-        assert mystr[:32] == BLANK
-        assert t1 != EMPTY
+        if mystr[:32] != BLANK or t1 == EMPTY:
+            assert can_fail
+            return ERROR
         v = mystr[63] & 0xF
         if v == 0 or v == 0xF:
             v = mystr[63] & 0xF0
@@ -117,7 +127,9 @@ def hasher(mystr, can_terminate = True, bits = None):
         else:
             return mystr[32:63] + bytes([mystr[63] & 0xF0])
     elif t1 == EMPTY:
-        assert mystr[32:] == BLANK
+        if mystr[32:] != BLANK:
+            assert can_fail
+            return ERROR
         v = mystr[31] & 0xF
         if v == 0 or v == 0xF:
             v = mystr[31] & 0xF0
@@ -166,26 +178,26 @@ def _find_implied_root_inclusion(bits, proof, val, can_terminate = True):
         if get_bit(val, len(bits)) == 0:
             if len(proof) != 33:
                 return ERROR
-            return hasher(proof[1:] + val, can_terminate, bits)
+            return hasher(proof[1:] + val, can_terminate, bits, True)
         if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(proof[1:33] + val, can_terminate, bits)
-        return hasher(proof[1:33] + _find_implied_root_inclusion(bits + [1], proof[33:], val), False, bits)
+            return hasher(proof[1:33] + val, can_terminate, bits, True)
+        return hasher(proof[1:33] + _find_implied_root_inclusion(bits + [1], proof[33:], val), False, bits, True)
     elif t == GIVE1:
         if get_bit(val, len(bits)) == 1:
             if len(proof) != 33:
                 return ERROR
-            return hasher(val + proof[1:], can_terminate, bits)
+            return hasher(val + proof[1:], can_terminate, bits, True)
         if len(proof) < 33:
             return ERROR
         if len(proof) == 33:
-            return hasher(val + proof[1:33], can_terminate, bits)
-        return hasher(_find_implied_root_inclusion(bits + [0], proof[33:], val) + proof[1:33], False, bits)
+            return hasher(val + proof[1:33], can_terminate, bits, True)
+        return hasher(_find_implied_root_inclusion(bits + [0], proof[33:], val) + proof[1:33], False, bits, True)
     elif t == EMPTY0:
-        return hasher(BLANK + _find_implied_root_inclusion(bits + [1], proof[1:], val, False), False, bits)
+        return hasher(BLANK + _find_implied_root_inclusion(bits + [1], proof[1:], val, False), False, bits, True)
     elif t == EMPTY1:
-        return hasher(_find_implied_root_inclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits)
+        return hasher(_find_implied_root_inclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits, True)
     else:
         return ERROR
 
@@ -220,11 +232,11 @@ def _find_implied_root_exclusion(bits, proof, val, can_terminate = True):
     if t == GIVE0:
         if len(proof) < 33 or get_bit(val, len(bits)) == 0:
             return ERROR
-        return hasher(proof[1:33] + _find_implied_root_exclusion(bits + [1], proof[33:], val), can_terminate, bits)
+        return hasher(proof[1:33] + _find_implied_root_exclusion(bits + [1], proof[33:], val), can_terminate, bits, True)
     elif t == GIVE1:
         if len(proof) < 33 or get_bit(val, len(bits)) == 1:
             return ERROR
-        return hasher(_find_implied_root_exclusion(bits + [0], proof[33:], val) + proof[1:33], can_terminate, bits)
+        return hasher(_find_implied_root_exclusion(bits + [0], proof[33:], val) + proof[1:33], can_terminate, bits, True)
     elif t == GIVEBOTH:
         if len(proof) != 65:
             return ERROR
@@ -236,21 +248,21 @@ def _find_implied_root_exclusion(bits, proof, val, can_terminate = True):
         else:
             if get_type(proof, 33) != TERMINAL:
                 return ERROR
-        return hasher(proof[1:], can_terminate, bits)
+        return hasher(proof[1:], can_terminate, bits, True)
     elif t == EMPTY0:
         if get_bit(val, len(bits)) == 0:
             if len(proof) != 33:
                 return ERROR
-            return hasher(BLANK + proof[1:33], False, bits)
+            return hasher(BLANK + proof[1:33], False, bits, True)
         else:
-            return hasher(BLANK + _find_implied_root_exclusion(bits + [1], proof[1:], val, False), False, bits)
+            return hasher(BLANK + _find_implied_root_exclusion(bits + [1], proof[1:], val, False), False, bits, True)
     elif t == EMPTY1:
         if get_bit(val, len(bits)) == 1:
             if len(proof) != 33:
                 return ERROR
-            return hasher(proof[1:] + BLANK, False, bits)
+            return hasher(proof[1:] + BLANK, False, bits, True)
         else:
-            return hasher(_find_implied_root_exclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits)
+            return hasher(_find_implied_root_exclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits, True)
     else:
         return ERROR
 
@@ -305,7 +317,7 @@ class MerkleSet:
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
         if t0 != INVALID and t1 != INVALID:
-            assert hasher(branch[pos:pos + 64]) == expected
+            assert expected is None or hasher(branch[pos:pos + 64]) == expected
         else:
             assert expected is None
         if t0 == EMPTY:
@@ -333,7 +345,7 @@ class MerkleSet:
             return
         assert branch[pos:pos + 64] == bytes(64)
         self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
-        self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth])
+        self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth], moddepth - 1)
 
     def _audit_whole_leaf(self, leaf, inputs):
         leaf = self._ref(leaf)
@@ -445,6 +457,8 @@ class MerkleSet:
         if t == EMPTY:
             self.root = toadd
         elif t == TERMINAL:
+            if toadd == self.root:
+                return
             self.rootblock = self._allocate_branch()
             self._insert_branch([self.root, toadd], self.rootblock, 8, 0, len(self.subblock_lengths) - 1)
             self.root = JUNK
