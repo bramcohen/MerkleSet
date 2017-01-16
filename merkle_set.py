@@ -290,7 +290,7 @@ class MerkleSet:
             allblocks = set()
             e = (self.root if t == MIDDLE else None)
             self._audit_branch(self._deref(self.rootblock), 0, allblocks, e)
-            assert allblocks == set(self.pointers_to_arrays.values())
+            assert allblocks == set(self.pointers_to_arrays.keys())
 
     def _audit_branch(self, branch, depth, allblocks, expected):
         assert branch not in allblocks
@@ -345,7 +345,7 @@ class MerkleSet:
             return
         assert branch[pos:pos + 64] == bytes(64)
         self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
-        self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth], moddepth - 1)
+        self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
 
     def _audit_whole_leaf(self, leaf, inputs):
         leaf = self._ref(leaf)
