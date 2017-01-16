@@ -272,7 +272,7 @@ class MerkleSet:
         while len(self.subblock_lengths) <= depth:
             self.subblock_lengths.append(64 + 2 * self.subblock_lengths[-1])
         self.leaf_units = leaf_units
-        self.root = BLANK
+        self.root = bytearray(32)
         # should be dumped completely on a port to C in favor of real dereferencing.
         self.pointers_to_arrays = {}
         self.rootblock = None
@@ -337,7 +337,7 @@ class MerkleSet:
             self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
         else:
             e = (branch[pos + 32:pos + 64] if t1 == MIDDLE else None)
-            assert self._audit_branch_inner(branch, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, outputs, allblocks, e)
+            self._audit_branch_inner(branch, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, outputs, allblocks, e)
 
     def _audit_branch_inner_empty(self, branch, pos, moddepth):
         if moddepth == 0:
@@ -421,7 +421,7 @@ class MerkleSet:
 
     def get_root(self):
         if get_type(self.root, 0) == INVALID:
-            self.root = self._force_calculation_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
+            self.root[0:] = self._force_calculation_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
         return bytes(self.root)
 
     def _force_calculation_branch(self, block, pos, moddepth):
@@ -455,13 +455,13 @@ class MerkleSet:
     def _add(self, toadd):
         t = get_type(self.root, 0)
         if t == EMPTY:
-            self.root = toadd
+            self.root[0:] = toadd
         elif t == TERMINAL:
             if toadd == self.root:
                 return
             self.rootblock = self._allocate_branch()
             self._insert_branch([self.root, toadd], self.rootblock, 8, 0, len(self.subblock_lengths) - 1)
-            self.root = JUNK
+            self.root[0:] = JUNK
         else:
             if self._add_to_branch(toadd, self.rootblock, 0) == INVALIDATING:
                 make_invalid(self.root, 0)
@@ -577,7 +577,7 @@ class MerkleSet:
             block[pos:pos + 32] = things[0]
             block[pos + 32:pos + 64] = things[1]
             return
-        bits = [get_type(thing, 0) for thing in things]
+        bits = [get_bit(thing, depth) for thing in things]
         if bits[0] == bits[1] == bits[2]:
             if bits[0] == 0:
                 self._insert_branch(things, block, pos + 64, depth + 1, moddepth - 1)
@@ -592,7 +592,7 @@ class MerkleSet:
                 make_invalid(block, pos)
             else:
                 block[pos:pos + 32] = things[0]
-                self._insert_branch(things[1:], block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                self._insert_branch(things[1:], block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
                 make_invalid(block, pos + 32)
 
     # state can be INVALIDATING, DONE
@@ -844,14 +844,14 @@ class MerkleSet:
             return
         elif t == TERMINAL:
             if toremove == self.root:
-                self.root = BLANK
+                self.root[0:] = BLANK
             return
         else:
             status, oneval = self._remove_branch(toremove, self.rootblock, 0)
         if status == INVALIDATING:
             make_invalid(self.root, 0)
         elif status == ONELEFT:
-            self.root = oneval
+            self.root[0:] = oneval
         elif status == FRAGILE:
             self._catch_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
 
