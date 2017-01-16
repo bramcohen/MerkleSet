@@ -1294,7 +1294,7 @@ class MerkleSet:
             assert t == MIDDLE
             buf.append(bytes([GIVE0]))
             buf.append(block[pos:pos + 32])
-            return self._is_included_branch(tocheck, block, pos + 64 + self.subblock_lengths[moddepth], depth + 1, moddepth - 1, buf)
+            return self._is_included_branch(tocheck, block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, buf)
 
     # returns boolean, appends to buf
     def _is_included_leaf(self, tocheck, block, pos, depth, buf):
@@ -1510,10 +1510,10 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         proofs = []
         for j in range(numhashes):
             r, proof = mset.is_included_already_hashed(hashes[j])
+            assert r == (j < i)
             if oldproofss is not None:
                 assert oldproofss[i][j] == proof
             proofs.append(proof)
-            assert r == (j < i)
             assert confirm_included_already_hashed(roots[-1], hashes[j], proof) == r
             assert confirm_not_included_already_hashed(roots[-1], hashes[j], proof) == (not r)
         if i > 0:
