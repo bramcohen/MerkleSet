@@ -314,7 +314,7 @@ class MerkleSet:
             if pos == 0xFF:
                 self._audit_branch(output, depth, allblocks, expected)
             else:
-                outputs.get(output, []).append((pos, expected))
+                outputs.get(bytes(output), []).append((pos, expected))
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
         if t0 != INVALID and t1 != INVALID:
