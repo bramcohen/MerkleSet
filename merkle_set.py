@@ -800,7 +800,7 @@ class MerkleSet:
         if len(things) == 2:
             leaf[lpos:lpos + 32] = things[0]
             leaf[lpos + 32:lpos + 64] = things[1]
-            return INVALIDATING, None
+            return INVALIDATING, lpos
         bits = [get_bit(thing, depth) for thing in things]
         if bits[0] == bits[1] == bits[2]:
             r, laterpos = self._insert_leaf(things, leaf, depth + 1)
