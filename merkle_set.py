@@ -301,7 +301,7 @@ class MerkleSet:
         self._audit_branch_inner(branch, 8, depth, len(self.subblock_lengths) - 1, outputs, allblocks, expected)
         active = branch[:8]
         if active != bytes(8):
-            assert active in outputs
+            assert bytes(active) in outputs
         for leaf, positions in outputs.items():
             assert leaf not in allblocks
             allblocks.add(leaf)
@@ -314,7 +314,8 @@ class MerkleSet:
             if pos == 0xFF:
                 self._audit_branch(output, depth, allblocks, expected)
             else:
-                outputs.get(bytes(output), []).append((pos, expected))
+                outputs.setdefault(bytes(output), []).append((pos, expected))
+            return
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
         if t0 != INVALID and t1 != INVALID:
@@ -351,7 +352,7 @@ class MerkleSet:
     def _audit_whole_leaf(self, leaf, inputs):
         leaf = self._ref(leaf)
         assert len(inputs) == from_bytes(leaf[2:4])
-        mycopy = self.allocate_leaf()
+        mycopy = self._allocate_leaf()
         for pos, expected in inputs:
             self._audit_whole_leaf_inner(leaf, mycopy, pos, expected)
         i = from_bytes(leaf[:2])
