@@ -359,7 +359,7 @@ class MerkleSet:
         while i != 0xFFFF:
             nexti = from_bytes(leaf[4 + i * 68:4 + i * 68 + 2])
             assert mycopy[4 + i * 68:4 + i * 68 + 68] == bytes(68)
-            mycopy[4 + i * 68:4 + i * 68 + 2] = to_bytes(i, 2)
+            mycopy[4 + i * 68:4 + i * 68 + 2] = to_bytes(nexti, 2)
             i = nexti
         assert mycopy[4:] == leaf[4:]
 
