@@ -352,7 +352,7 @@ class MerkleSet:
     def _audit_whole_leaf(self, leaf, inputs):
         leaf = self._ref(leaf)
         assert len(inputs) == from_bytes(leaf[2:4])
-        mycopy = self._allocate_leaf()
+        mycopy = bytearray(4 + self.leaf_units * 68)
         for pos, expected in inputs:
             self._audit_whole_leaf_inner(leaf, mycopy, pos, expected)
         i = from_bytes(leaf[:2])
@@ -362,7 +362,6 @@ class MerkleSet:
             mycopy[4 + i * 68:4 + i * 68 + 2] = to_bytes(i, 2)
             i = nexti
         assert mycopy[4:] == leaf[4:]
-        self._deallocate(mycopy)
 
     def _audit_whole_leaf_inner(self, leaf, mycopy, pos, expected):
         rpos = 4 + pos * 68
@@ -801,7 +800,7 @@ class MerkleSet:
         if len(things) == 2:
             leaf[lpos:lpos + 32] = things[0]
             leaf[lpos + 32:lpos + 64] = things[1]
-            return INVALIDATING, lpos
+            return INVALIDATING, pos
         bits = [get_bit(thing, depth) for thing in things]
         if bits[0] == bits[1] == bits[2]:
             r, laterpos = self._insert_leaf(things, leaf, depth + 1)
