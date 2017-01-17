@@ -550,7 +550,7 @@ class MerkleSet:
                 block[pos:pos + 32] = bytes(32)
                 self._insert_branch([toadd, v0, v1], block, pos, depth, moddepth)
             else:
-                self._insert_branch([toadd, v1], block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+                self._insert_branch([toadd, v1], block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
                 make_invalid(block, pos + 32)
             if t0 != INVALID:
                 return INVALIDATING
