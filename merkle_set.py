@@ -24,6 +24,7 @@ Reasonable defense against malicious insertion attacks
 TODO: Port to C
 TODO: Optimize! Benchmark!
 TODO: Make sure that data structures don't get garbled on an out of memory error
+TODO: Add an iterator
 TODO: add multi-threading support
 TODO: add support for continuous self-auditing
 TODO: Try heuristically calculating hashes non-lazily when they're likely to be needed later
@@ -1278,8 +1279,11 @@ class MerkleSet:
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(bytes([GIVE1]))
-            buf.append(block[pos + 32:pos + 64])
+            if get_type(block, pos + 32) == EMPTY:
+                buf.append(bytes([EMPTY1]))
+            else:
+                buf.append(bytes([GIVE1]))
+                buf.append(block[pos + 32:pos + 64])
             return self._is_included_branch(tocheck, block, pos + 64, depth + 1, moddepth - 1, buf)
         else:
             t = get_type(block, pos + 32)
@@ -1292,8 +1296,11 @@ class MerkleSet:
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(bytes([GIVE0]))
-            buf.append(block[pos:pos + 32])
+            if get_type(block, pos) == EMPTY:
+                buf.append(bytes([EMPTY0]))
+            else:
+                buf.append(bytes([GIVE0]))
+                buf.append(block[pos:pos + 32])
             return self._is_included_branch(tocheck, block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, buf)
 
     # returns boolean, appends to buf
@@ -1318,8 +1325,11 @@ class MerkleSet:
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(bytes([GIVE1]))
-            buf.append(block[pos + 32:pos + 64])
+            if get_type(block, pos + 32) == EMPTY:
+                buf.append(bytes([EMPTY1]))
+            else:
+                buf.append(bytes([GIVE1]))
+                buf.append(block[pos + 32:pos + 64])
             return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]), depth + 1, buf)
         else:
             t = get_type(block, pos + 32)
@@ -1332,8 +1342,11 @@ class MerkleSet:
                 buf.append(block[pos:pos + 64])
                 return False
             assert t == MIDDLE
-            buf.append(bytes([GIVE0]))
-            buf.append(block[pos:pos + 32])
+            if get_type(block, pos) == EMPTY:
+                buf.append(bytes([EMPTY0]))
+            else:
+                buf.append(bytes([GIVE0]))
+                buf.append(block[pos:pos + 32])
             return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]), depth + 1, buf)
 
 class ReferenceMerkleSet:
