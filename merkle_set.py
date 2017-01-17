@@ -356,7 +356,7 @@ class MerkleSet:
         for pos, expected in inputs:
             self._audit_whole_leaf_inner(leaf, mycopy, pos, expected)
         i = from_bytes(leaf[:2])
-        while i != 0xFF:
+        while i != 0xFFFF:
             nexti = from_bytes(leaf[4 + i * 68:4 + i * 68 + 2])
             assert mycopy[4 + i * 68:4 + i * 68 + 68] == bytes(68)
             mycopy[4 + i * 68:4 + i * 68 + 2] = to_bytes(i, 2)
@@ -369,10 +369,8 @@ class MerkleSet:
         mycopy[rpos:rpos + 68] = leaf[rpos:rpos + 68]
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
-        if t0 != INVALID and t1 != INVALID:
+        if expected is not None and t0 != INVALID and t1 != INVALID:
             assert hasher(leaf[rpos:rpos + 64]) == expected
-        else:
-            assert expected == None
         if t0 == EMPTY:
             assert t1 != EMPTY
             assert t1 != MIDDLE
