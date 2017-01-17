@@ -426,7 +426,7 @@ class MerkleSet:
     def _force_calculation_branch(self, block, pos, moddepth):
         if moddepth == 0:
             block = self._deref(block[pos:pos + 8])
-            pos = from_bytes(posref[4:6])
+            pos = from_bytes(block[pos + 8:pos + 10])
             if pos == 0xFFFF:
                 return self._force_calculation_branch(block, 8, len(self.subblock_lengths) - 1)
             else:
