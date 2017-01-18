@@ -649,7 +649,7 @@ class MerkleSet:
                     return DONE
                 t1 = get_type(leaf, rpos + 32)
                 if t1 == TERMINAL:
-                    oldval1 = leaf[rpos + 32:pos + 64]
+                    oldval1 = leaf[rpos + 32:rpos + 64]
                     if toadd == oldval1:
                         return DONE
                     nextpos = from_bytes(leaf[:2])
