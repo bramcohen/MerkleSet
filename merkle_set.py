@@ -148,6 +148,7 @@ def make_invalid(mybytes, pos):
     mybytes[pos] |= INVALID
 
 def get_bit(mybytes, pos):
+    assert len(mybytes) == 32
     pos += 2
     return (mybytes[pos // 8] >> (7 - (pos % 8))) & 1
 
@@ -679,7 +680,7 @@ class MerkleSet:
                     return DONE
                 return r
         else:
-            t = get_type(leaf, rpos)
+            t = get_type(leaf, rpos + 32)
             if t == EMPTY:
                 leaf[rpos + 32:rpos + 64] = toadd
                 return INVALIDATING
@@ -789,6 +790,8 @@ class MerkleSet:
     # returns (status, pos)
     # status can be INVALIDATING, FULL
     def _insert_leaf(self, things, leaf, depth):
+        for thing in things:
+            assert len(thing) == 32
         pos = from_bytes(leaf[:2])
         if pos == 0xFFFF:
             return FULL, None
