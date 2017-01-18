@@ -596,7 +596,7 @@ class MerkleSet:
 
     # state can be INVALIDATING, DONE
     def _add_to_leaf(self, toadd, branch, branchpos, leaf, leafpos, depth):
-        r = self._add_to_leaf_inner(toadd, leaf, pos, depth)
+        r = self._add_to_leaf_inner(toadd, leaf, leafpos, depth)
         if r != FULL:
             return r
         was_invalid = get_type(leaf[leafpos]) == INVALID or get_type(leaf[leafpos + 32]) == INVALID
