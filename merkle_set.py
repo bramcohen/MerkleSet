@@ -411,7 +411,7 @@ class MerkleSet:
         assert len(ref) == 8
         if ref == bytes(8):
             return None
-        return self.pointers_to_arrays[ref]
+        return self.pointers_to_arrays[bytes(ref)]
 
     def _deref(self, thing):
         if thing is None:
@@ -425,12 +425,12 @@ class MerkleSet:
 
     def _force_calculation_branch(self, block, pos, moddepth):
         if moddepth == 0:
-            block = self._deref(block[pos:pos + 8])
+            block2 = self._ref(block[pos:pos + 8])
             pos = from_bytes(block[pos + 8:pos + 10])
             if pos == 0xFFFF:
-                return self._force_calculation_branch(block, 8, len(self.subblock_lengths) - 1)
+                return self._force_calculation_branch(block2, 8, len(self.subblock_lengths) - 1)
             else:
-                return self._force_calculation_leaf(block, pos)
+                return self._force_calculation_leaf(block2, pos)
         if get_type(block, pos) == INVALID:
             block[pos:pos + 32] = self._force_calculation_branch(block, pos + 64, moddepth - 1)
         if get_type(block, pos + 32) == INVALID:
