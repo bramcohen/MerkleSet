@@ -1257,7 +1257,7 @@ class MerkleSet:
             if block[pos + 8:pos + 10] == bytes([0xFF, 0xFF]):
                 return self._is_included_branch(tocheck, self._ref(block[pos:pos + 8]), 8, depth + 1, len(self.subblock_lengths) - 1, buf)
             else:
-                return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), buf)
+                return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), depth, buf)
         if block[pos:pos + 32] == tocheck:
             buf.append(bytes([GIVE1]))
             buf.append(block[pos + 32:pos + 64])
