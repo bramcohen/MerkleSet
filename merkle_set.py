@@ -653,7 +653,7 @@ class MerkleSet:
                     if toadd == oldval1:
                         return DONE
                     nextpos = from_bytes(leaf[:2])
-                    leaf[:2] = to_bytes(rpos, 2)
+                    leaf[:2] = to_bytes(pos, 2)
                     leaf[rpos:rpos + 64] = bytes(64)
                     r, nextnextpos = self._insert_leaf([toadd, oldval0, oldval1], leaf, depth)
                     if r == FULL:
