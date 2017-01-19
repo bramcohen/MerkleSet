@@ -697,6 +697,7 @@ class MerkleSet:
                     nextpos = from_bytes(leaf[:2])
                     leaf[:2] = to_bytes(pos, 2)
                     leaf[rpos:rpos + 64] = bytes(64)
+                    leaf[rpos:rpos + 2] = to_bytes(nextpos, 2)
                     r, nextnextpos = self._insert_leaf([toadd, oldval0, oldval1], leaf, depth)
                     if r == FULL:
                         leaf[:2] = to_bytes(nextpos, 2)
