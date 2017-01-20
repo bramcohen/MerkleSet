@@ -1015,7 +1015,7 @@ class MerkleSet:
     def _remove_leaf_inner(self, toremove, block, pos, depth):
         rpos = 4 + pos * 68
         if get_bit(toremove, depth) == 0:
-            t = get_type(block[rpos])
+            t = get_type(block, rpos)
             if t == EMPTY:
                 return DONE
             if t == TERMINAL:
@@ -1061,7 +1061,7 @@ class MerkleSet:
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]))
         else:
-            t = get_type(block[rpos + 32])
+            t = get_type(block, rpos + 32)
             if t == EMPTY:
                 return DONE
             elif t == TERMINAL:
