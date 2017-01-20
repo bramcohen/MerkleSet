@@ -374,7 +374,7 @@ class MerkleSet:
             assert hasher(leaf[rpos:rpos + 64]) == expected
         if t0 == EMPTY:
             assert t1 != EMPTY
-            assert t1 != MIDDLE
+            assert t1 != TERMINAL
             assert leaf[rpos:rpos + 32] == BLANK
             assert leaf[rpos + 64:rpos + 66] == bytes(2)
         elif t0 == TERMINAL:
@@ -1556,6 +1556,6 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(6, 64), roots, proofss)
+    _testmset(num, MerkleSet(4, 20), roots, proofss)
 
 testboth(100)
