@@ -749,6 +749,15 @@ class MerkleSet:
     # returns state, newpos
     # state can be FULL, DONE
     def _copy_between_leafs(self, fromleaf, toleaf, frompos):
+        r, pos = self._copy_between_leafs_inner(fromleaf, toleaf, frompos)
+        if r == DONE:
+            toleaf[2:4] = to_bytes(from_bytes(toleaf[2:4]) + 1, 2)
+            fromleaf[2:4] = to_bytes(from_bytes(fromleaf[2:4]) - 1, 2)
+        return r, pos
+
+    # returns state, newpos
+    # state can be FULL, DONE
+    def _copy_between_leafs_inner(self, fromleaf, toleaf, frompos):
         topos = from_bytes(toleaf[:2])
         if topos == 0xFFFF:
             return FULL, None
@@ -759,14 +768,14 @@ class MerkleSet:
         lowpos = None
         highpos = None
         if t0 == MIDDLE or t0 == INVALID:
-            r, lowpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 64:rfrompos + 66]))
+            r, lowpos = self._copy_between_leafs_inner(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 64:rfrompos + 66]))
             if r == FULL:
                 assert toleaf[:2] == toleaf[rtopos:rtopos + 2]
                 toleaf[:2] = to_bytes(topos, 2)
                 return FULL, None
         t1 = get_type(fromleaf, rfrompos + 32)
         if t1 == MIDDLE or t1 == INVALID:
-            r, highpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 66:rfrompos + 68]))
+            r, highpos = self._copy_between_leafs_inner(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 66:rfrompos + 68]))
             if r == FULL:
                 if t0 == MIDDLE or t0 == INVALID:
                     self._delete_from_leaf(toleaf, lowpos)
@@ -778,7 +787,6 @@ class MerkleSet:
             toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos, 2)
         if highpos is not None:
             toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos, 2)
-        toleaf[2:4] = to_bytes(from_bytes(toleaf[2:4]) + 1, 2)
         return DONE, topos
 
     def _delete_from_leaf(self, leaf, pos):
