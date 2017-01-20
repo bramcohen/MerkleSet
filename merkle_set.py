@@ -138,7 +138,7 @@ def hasher(mystr, can_terminate = True, bits = None, can_fail = False):
                 return mystr[:31] + bytes([mystr[31] | 0xF0])
         else:
             return mystr[:31] + bytes([mystr[31] | 0x0F])
-    r = blake2s(mystr).digest()
+    r = blake2s(bytes(mystr)).digest()
     return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
 def get_type(mybytes, pos):
@@ -268,6 +268,26 @@ def _find_implied_root_exclusion(bits, proof, val, can_terminate = True):
     else:
         return ERROR
 
+class safearray(bytearray):
+    def __setitem__(self, index, thing):
+        if type(index) is slice:
+            start = index.start
+            if start is None:
+                start = 0
+            stop = index.stop
+            if stop is None:
+                stop = len(self)
+            assert index.step is None
+            assert start >= 0
+            assert stop >= 0
+            assert start < len(self)
+            assert stop <= len(self)
+            assert stop - start == len(thing)
+        else:
+            assert index >= 0
+            assert index < len(self)
+        bytearray.__setitem__(self, index, thing)
+
 class MerkleSet:
     def __init__(self, depth, leaf_units):
         self.subblock_lengths = [10]
@@ -299,6 +319,7 @@ class MerkleSet:
         allblocks.add(branch)
         outputs = {}
         branch = self._ref(branch)
+        assert len(branch) == 8 + self.subblock_lengths[-1]
         self._audit_branch_inner(branch, 8, depth, len(self.subblock_lengths) - 1, outputs, allblocks, expected)
         active = branch[:8]
         if active != bytes(8):
@@ -312,6 +333,7 @@ class MerkleSet:
         if moddepth == 0:
             newpos = from_bytes(branch[pos + 8:pos + 10])
             output = branch[pos:pos + 8]
+            assert bytes(output) in self.pointers_to_arrays
             if newpos == 0xFF:
                 self._audit_branch(output, depth, allblocks, expected)
             else:
@@ -352,6 +374,7 @@ class MerkleSet:
 
     def _audit_whole_leaf(self, leaf, inputs):
         leaf = self._ref(leaf)
+        assert len(leaf) == 4 + self.leaf_units * 68
         assert len(inputs) == from_bytes(leaf[2:4])
         mycopy = bytearray(4 + self.leaf_units * 68)
         for pos, expected in inputs:
@@ -393,12 +416,12 @@ class MerkleSet:
             self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 66:rpos + 68]), e)
 
     def _allocate_branch(self):
-        b = bytearray(8 + self.subblock_lengths[-1])
+        b = safearray(8 + self.subblock_lengths[-1])
         self.pointers_to_arrays[self._deref(b)] = b
         return b
 
     def _allocate_leaf(self):
-        leaf = bytearray(4 + self.leaf_units * 68)
+        leaf = safearray(4 + self.leaf_units * 68)
         for i in range(self.leaf_units):
             p = 4 + i * 68
             leaf[p:p + 2] = to_bytes((i + 1) if i != self.leaf_units - 1 else 0xFFFF, 2)
@@ -623,7 +646,7 @@ class MerkleSet:
                 if was_invalid:
                     return DONE
                 return INVALIDATING
-        active = self._allocate_branch()
+        active = self._allocate_leaf()
         r, newpos = self._copy_between_leafs(leaf, active, leafpos)
         assert r == DONE
         self._delete_from_leaf(leaf, leafpos)
@@ -766,7 +789,7 @@ class MerkleSet:
         t = get_type(leaf, rpos + 32)
         if t == MIDDLE or t == INVALID:
             self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
-        leaf[rpos + 2:rpos + 68] = bytes(68)
+        leaf[rpos + 2:rpos + 68] = bytes(66)
         leaf[rpos:rpos + 2] = leaf[:2]
         leaf[:2] = to_bytes(pos, 2)
 
@@ -775,11 +798,11 @@ class MerkleSet:
         if moddepth == 0:
             active = self._ref(branch[:8])
             if active is None:
-                active = self._allocate_branch()
+                active = self._allocate_leaf()
                 branch[0:8] = self._deref(active)
             r, newpos = self._copy_between_leafs(leaf, active, leafpos)
             if r == FULL:
-                active = self._allocate_branch()
+                active = self._allocate_leaf()
                 branch[0:8] = self._deref(active)
                 r, newpos = self._copy_between_leafs(leaf, active, leafpos)
                 assert r == DONE
@@ -1259,7 +1282,7 @@ class MerkleSet:
             return tocheck == self.root, b''
         assert t == MIDDLE
         r = self._is_included_branch(tocheck, self.rootblock, 8, 0, len(self.subblock_lengths) - 1, buf)
-        return r, b''.join(buf)
+        return r, b''.join([bytes(x) for x in buf])
 
     # returns boolean, appends to buf
     def _is_included_branch(self, tocheck, block, pos, depth, moddepth, buf):
