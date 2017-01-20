@@ -885,7 +885,7 @@ class MerkleSet:
             if r == ONELEFT:
                 block[pos:pos + 10] = bytes(10)
             return r, val
-        if get_bit(block, pos) == 0:
+        if get_bit(block[pos:pos + 32], depth) == 0:
             r, val = self._remove_branch_inner(toremove, block, pos + 64, depth + 1, moddepth - 1)
             if r == NOTSTARTED:
                 t = get_type(block, pos)
@@ -1559,6 +1559,6 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(4, 20), roots, proofss)
+    _testmset(num, MerkleSet(4, 100), roots, proofss)
 
 testboth(100)
