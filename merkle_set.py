@@ -758,14 +758,15 @@ class MerkleSet:
         return DONE, topos
 
     def _delete_from_leaf(self, leaf, pos):
-        t = get_type(leaf, pos)
+        rpos = 4 + pos * 68
+        t = get_type(leaf, rpos)
         if t == MIDDLE or t == INVALID:
-            self._delete_from_leaf(leaf, from_bytes(leaf[pos + 64:pos + 66]))
-        t = get_type(leaf, pos + 32)
+            self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]))
+        t = get_type(leaf, rpos + 32)
         if t == MIDDLE or t == INVALID:
-            self._delete_from_leaf(leaf, from_bytes(leaf[pos + 66:pos + 68]))
-        leaf[pos + 2:pos + 68] = bytes(68)
-        leaf[pos:pos + 2] = leaf[:2]
+            self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
+        leaf[rpos + 2:rpos + 68] = bytes(68)
+        leaf[rpos:rpos + 2] = leaf[:2]
         leaf[:2] = to_bytes(pos, 2)
 
     def _copy_leaf_to_branch(self, branch, branchpos, moddepth, leaf, leafpos):
@@ -1559,6 +1560,6 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(4, 100), roots, proofss)
+    _testmset(num, MerkleSet(4, 20), roots, proofss)
 
 testboth(100)
