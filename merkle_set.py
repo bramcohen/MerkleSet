@@ -734,6 +734,7 @@ class MerkleSet:
         toleaf[0:2] = toleaf[rtopos:rtopos + 2]
         t0 = get_type(fromleaf, rfrompos)
         lowpos = None
+        highpos = None
         if t0 == MIDDLE or t0 == INVALID:
             r, lowpos = self._copy_between_leafs(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 64:rfrompos + 66]))
             if r == FULL:
@@ -750,8 +751,10 @@ class MerkleSet:
                 toleaf[:2] = to_bytes(topos, 2)
                 return FULL, None
         toleaf[rtopos:rtopos + 64] = fromleaf[rfrompos:rfrompos + 64]
-        toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos, 2)
-        toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos, 2)
+        if lowpos is not None:
+            toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos, 2)
+        if highpos is not None:
+            toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos, 2)
         return DONE, topos
 
     def _delete_from_leaf(self, leaf, pos):
