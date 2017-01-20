@@ -600,7 +600,7 @@ class MerkleSet:
         r = self._add_to_leaf_inner(toadd, leaf, leafpos, depth)
         if r != FULL:
             return r
-        was_invalid = get_type(leaf[leafpos]) == INVALID or get_type(leaf[leafpos + 32]) == INVALID
+        was_invalid = get_type(leaf, leafpos) == INVALID or get_type(leaf, leafpos + 32) == INVALID
         if from_bytes(leaf[2:4]) == 1:
             newb = self._allocate_branch()
             self._copy_leaf_to_branch(newb, 8, len(self.subblock_lengths) - 1, leaf, leafpos)
