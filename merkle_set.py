@@ -755,6 +755,7 @@ class MerkleSet:
             toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos, 2)
         if highpos is not None:
             toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos, 2)
+        toleaf[2:4] = to_bytes(from_bytes(toleaf[2:4]) + 1, 2)
         return DONE, topos
 
     def _delete_from_leaf(self, leaf, pos):
