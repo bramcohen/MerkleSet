@@ -332,12 +332,12 @@ class MerkleSet:
     def _audit_branch_inner(self, branch, pos, depth, moddepth, outputs, allblocks, expected):
         if moddepth == 0:
             newpos = from_bytes(branch[pos + 8:pos + 10])
-            output = branch[pos:pos + 8]
+            output = bytes(branch[pos:pos + 8])
             assert bytes(output) in self.pointers_to_arrays
-            if newpos == 0xFF:
+            if newpos == 0xFFFF:
                 self._audit_branch(output, depth, allblocks, expected)
             else:
-                outputs.setdefault(bytes(output), []).append((newpos, expected))
+                outputs.setdefault(output, []).append((newpos, expected))
             return
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
@@ -1589,4 +1589,4 @@ def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
     _testmset(num, MerkleSet(3, 6), roots, proofss)
 
-testboth(1000)
+testboth(100)
