@@ -341,10 +341,8 @@ class MerkleSet:
             return
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
-        if t0 != INVALID and t1 != INVALID:
-            assert expected is None or hasher(branch[pos:pos + 64]) == expected
-        else:
-            assert expected is None
+        if expected is not None:
+            assert t0 != INVALID and t1 != INVALID and hasher(branch[pos:pos + 64]) == expected
         if t0 == EMPTY:
             assert t1 != EMPTY and t1 != TERMINAL
             assert branch[pos:pos + 32] == BLANK
@@ -394,8 +392,8 @@ class MerkleSet:
         mycopy[rpos:rpos + 68] = leaf[rpos:rpos + 68]
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
-        if expected is not None and t0 != INVALID and t1 != INVALID:
-            assert hasher(leaf[rpos:rpos + 64]) == expected
+        if expected is not None:
+            assert t0 != INVALID and t1 != INVALID and hasher(leaf[rpos:rpos + 64]) == expected
         if t0 == EMPTY:
             assert t1 != EMPTY
             assert t1 != TERMINAL
@@ -430,7 +428,7 @@ class MerkleSet:
         return leaf
 
     def _deallocate(self, thing):
-        del self.pointers_to_arrays[self._deref(branch)]
+        del self.pointers_to_arrays[self._deref(thing)]
 
     def _ref(self, ref):
         assert len(ref) == 8
@@ -811,7 +809,7 @@ class MerkleSet:
                 branch[0:8] = self._deref(active)
                 r, newpos = self._copy_between_leafs(leaf, active, leafpos)
                 assert r == DONE
-            branch[branchpos:branchpos + 8] = self._ref(active)
+            branch[branchpos:branchpos + 8] = self._deref(active)
             branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
             return
         branch[branchpos:branchpos + 64] = leaf[rleafpos:rleafpos + 64]
@@ -1589,6 +1587,6 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(4, 20), roots, proofss)
+    _testmset(num, MerkleSet(3, 6), roots, proofss)
 
-testboth(100)
+testboth(1000)
