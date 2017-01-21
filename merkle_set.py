@@ -376,20 +376,21 @@ class MerkleSet:
         leaf = self._ref(leaf)
         assert len(leaf) == 4 + self.leaf_units * 68
         assert len(inputs) == from_bytes(leaf[2:4])
-        mycopy = bytearray(4 + self.leaf_units * 68)
+        mycopy = bytearray([88] * (4 + self.leaf_units * 68))
         for pos, expected in inputs:
             self._audit_whole_leaf_inner(leaf, mycopy, pos, expected)
         i = from_bytes(leaf[:2])
         while i != 0xFFFF:
             nexti = from_bytes(leaf[4 + i * 68:4 + i * 68 + 2])
-            assert mycopy[4 + i * 68:4 + i * 68 + 68] == bytes(68)
+            assert mycopy[4 + i * 68:4 + i * 68 + 68] == b'X' * 68
+            mycopy[4 + i * 68:4 + i * 68 + 68] = bytes(68)
             mycopy[4 + i * 68:4 + i * 68 + 2] = to_bytes(nexti, 2)
             i = nexti
         assert mycopy[4:] == leaf[4:]
 
     def _audit_whole_leaf_inner(self, leaf, mycopy, pos, expected):
         rpos = 4 + pos * 68
-        assert mycopy[rpos:rpos + 68] == bytes(68)
+        assert mycopy[rpos:rpos + 68] == b'X' * 68
         mycopy[rpos:rpos + 68] = leaf[rpos:rpos + 68]
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
@@ -623,7 +624,6 @@ class MerkleSet:
         r = self._add_to_leaf_inner(toadd, leaf, leafpos, depth)
         if r != FULL:
             return r
-        was_invalid = get_type(leaf, leafpos) == INVALID or get_type(leaf, leafpos + 32) == INVALID
         if from_bytes(leaf[2:4]) == 1:
             newb = self._allocate_branch()
             self._copy_leaf_to_branch(newb, 8, len(self.subblock_lengths) - 1, leaf, leafpos)
@@ -631,8 +631,6 @@ class MerkleSet:
             branch[branchpos:branchpos + 8] = self._deref(newb)
             branch[branchpos + 8:branchpos + 10] = to_bytes(0xFFFF, 2)
             self._deallocate(leaf)
-            if was_invalid:
-                return DONE
             return INVALIDATING
         active = self._ref(branch[:8])
         if active is not None and active is not leaf:
@@ -642,10 +640,11 @@ class MerkleSet:
                 branch[branchpos:branchpos + 8] = self._deref(active)
                 branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
                 r = self._add_to_leaf_inner(toadd, active, newpos, depth)
-                assert r == INVALIDATING
-                if was_invalid:
-                    return DONE
-                return INVALIDATING
+                if r != FULL:
+                    assert r == INVALIDATING
+                    return INVALIDATING
+                leaf = active
+                leafpos = newpos
         active = self._allocate_leaf()
         r, newpos = self._copy_between_leafs(leaf, active, leafpos)
         assert r == DONE
@@ -654,8 +653,6 @@ class MerkleSet:
         branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
         r = self._add_to_leaf_inner(toadd, active, newpos, depth)
         assert r == INVALIDATING
-        if was_invalid:
-            return DONE
         return INVALIDATING
 
     # returns INVALIDATING, DONE, FULL
