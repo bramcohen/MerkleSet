@@ -628,28 +628,24 @@ class MerkleSet:
             self._add_to_branch(toadd, newb, depth)
             branch[branchpos:branchpos + 8] = self._deref(newb)
             branch[branchpos + 8:branchpos + 10] = to_bytes(0xFFFF, 2)
+            if branch[:8] == self._deref(leaf):
+                branch[:8] = bytes(8)
             self._deallocate(leaf)
             return INVALIDATING
         active = self._ref(branch[:8])
-        if active is not None and active is not leaf:
-            r, newpos = self._copy_between_leafs(leaf, active, leafpos)
-            if r == DONE:
-                self._delete_from_leaf(leaf, leafpos)
-                branch[branchpos:branchpos + 8] = self._deref(active)
-                branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
-                r = self._add_to_leaf_inner(toadd, active, newpos, depth)
-                if r != FULL:
-                    assert r == INVALIDATING
-                    return INVALIDATING
-                leaf = active
-                leafpos = newpos
-        active = self._allocate_leaf()
+        if active is None or active is leaf:
+            active = self._allocate_leaf()
         r, newpos = self._copy_between_leafs(leaf, active, leafpos)
-        assert r == DONE
-        self._delete_from_leaf(leaf, leafpos)
+        if r != DONE:
+            active = self._allocate_leaf()
+            r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+            assert r == DONE
         branch[branchpos:branchpos + 8] = self._deref(active)
+        if branch[:8] != self._deref(active):
+            branch[:8] = self._deref(active)
         branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
-        r = self._add_to_leaf_inner(toadd, active, newpos, depth)
+        self._delete_from_leaf(leaf, leafpos)
+        r = self._add_to_leaf(toadd, branch, branchpos, active, newpos, depth)
         assert r == INVALIDATING
         return INVALIDATING
 
@@ -746,8 +742,8 @@ class MerkleSet:
     def _copy_between_leafs(self, fromleaf, toleaf, frompos):
         r, pos = self._copy_between_leafs_inner(fromleaf, toleaf, frompos)
         if r == DONE:
-            toleaf[2:4] = to_bytes(from_bytes(toleaf[2:4]) + 1, 2)
-            fromleaf[2:4] = to_bytes(from_bytes(fromleaf[2:4]) - 1, 2)
+            toleaf[2:4] = to_bytes((from_bytes(toleaf[2:4]) + 1) % 0xFFFF, 2)
+            fromleaf[2:4] = to_bytes((from_bytes(fromleaf[2:4]) - 1) % 0xFFFF, 2)
         return r, pos
 
     # returns state, newpos
@@ -1587,6 +1583,6 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(2, 3), roots, proofss)
+    _testmset(num, MerkleSet(2, 10), roots, proofss)
 
 testboth(100)
