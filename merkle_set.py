@@ -1291,7 +1291,7 @@ class MerkleSet:
     def _is_included_branch(self, tocheck, block, pos, depth, moddepth, buf):
         if moddepth == 0:
             if block[pos + 8:pos + 10] == bytes([0xFF, 0xFF]):
-                return self._is_included_branch(tocheck, self._ref(block[pos:pos + 8]), 8, depth + 1, len(self.subblock_lengths) - 1, buf)
+                return self._is_included_branch(tocheck, self._ref(block[pos:pos + 8]), 8, depth, len(self.subblock_lengths) - 1, buf)
             else:
                 return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), depth, buf)
         if block[pos:pos + 32] == tocheck:
@@ -1587,6 +1587,6 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(3, 6), roots, proofss)
+    _testmset(num, MerkleSet(2, 3), roots, proofss)
 
 testboth(100)
