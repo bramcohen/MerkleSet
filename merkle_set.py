@@ -581,15 +581,20 @@ class MerkleSet:
     def _insert_branch(self, things, block, pos, depth, moddepth):
         if moddepth == 0:
             child = self._ref(block[:8])
-            if child is None:
-                child = self._allocate_leaf()
-                block[:8] = self._deref(child)
-            r, leafpos = self._insert_leaf(things, child, depth)
+            r = FULL
+            if child is not None:
+                r, leafpos = self._insert_leaf(things, child, depth)
             if r == FULL:
                 child = self._allocate_leaf()
-                block[:8] = self._deref(child)
                 r, leafpos = self._insert_leaf(things, child, depth)
-                assert r == INVALIDATING
+                if r == FULL:
+                    self._deallocate(child)
+                    newb = self._allocate_branch()
+                    block[pos:pos + 8] = self._deref(newb)
+                    block[pos + 8:pos + 10] = to_bytes(0xFFFF, 2)
+                    self._insert_branch(things, newb, 8, depth, len(self.subblock_lengths) - 1)
+                    return
+                block[:8] = self._deref(child)
             child[2:4] = to_bytes(from_bytes(child[2:4]) + 1, 2)
             block[pos:pos + 8] = self._deref(child)
             block[pos + 8:pos + 10] = to_bytes(leafpos, 2)
@@ -742,8 +747,8 @@ class MerkleSet:
     def _copy_between_leafs(self, fromleaf, toleaf, frompos):
         r, pos = self._copy_between_leafs_inner(fromleaf, toleaf, frompos)
         if r == DONE:
-            toleaf[2:4] = to_bytes((from_bytes(toleaf[2:4]) + 1) % 0xFFFF, 2)
-            fromleaf[2:4] = to_bytes((from_bytes(fromleaf[2:4]) - 1) % 0xFFFF, 2)
+            toleaf[2:4] = to_bytes(from_bytes(toleaf[2:4]) + 1, 2)
+            fromleaf[2:4] = to_bytes(from_bytes(fromleaf[2:4]) - 1, 2)
         return r, pos
 
     # returns state, newpos
@@ -799,12 +804,13 @@ class MerkleSet:
             if active is None:
                 active = self._allocate_leaf()
                 branch[0:8] = self._deref(active)
-            r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+            r, newpos = self._copy_between_leafs_inner(leaf, active, leafpos)
             if r == FULL:
                 active = self._allocate_leaf()
                 branch[0:8] = self._deref(active)
-                r, newpos = self._copy_between_leafs(leaf, active, leafpos)
+                r, newpos = self._copy_between_leafs_inner(leaf, active, leafpos)
                 assert r == DONE
+            active[2:4] = to_bytes(from_bytes(active[2:4]) + 1, 2)
             branch[branchpos:branchpos + 8] = self._deref(active)
             branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
             return
