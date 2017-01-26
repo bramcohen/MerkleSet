@@ -437,8 +437,7 @@ class MerkleSet:
         return self.pointers_to_arrays[bytes(ref)]
 
     def _deref(self, thing):
-        if thing is None:
-            return bytes(8)
+        assert thing is not None
         return to_bytes(id(thing), 8)
 
     def get_root(self):
@@ -650,9 +649,7 @@ class MerkleSet:
             branch[:8] = self._deref(active)
         branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
         self._delete_from_leaf(leaf, leafpos)
-        r = self._add_to_leaf(toadd, branch, branchpos, active, newpos, depth)
-        assert r == INVALIDATING
-        return INVALIDATING
+        return self._add_to_leaf(toadd, branch, branchpos, active, newpos, depth)
 
     # returns INVALIDATING, DONE, FULL
     def _add_to_leaf_inner(self, toadd, leaf, pos, depth):
@@ -805,11 +802,7 @@ class MerkleSet:
                 active = self._allocate_leaf()
                 branch[0:8] = self._deref(active)
             r, newpos = self._copy_between_leafs_inner(leaf, active, leafpos)
-            if r == FULL:
-                active = self._allocate_leaf()
-                branch[0:8] = self._deref(active)
-                r, newpos = self._copy_between_leafs_inner(leaf, active, leafpos)
-                assert r == DONE
+            assert r == DONE
             active[2:4] = to_bytes(from_bytes(active[2:4]) + 1, 2)
             branch[branchpos:branchpos + 8] = self._deref(active)
             branch[branchpos + 8:branchpos + 10] = to_bytes(newpos, 2)
@@ -889,6 +882,7 @@ class MerkleSet:
             make_invalid(self.root, 0)
         elif status == ONELEFT:
             self.root[0:] = oneval
+            self.rootblock = None
         elif status == FRAGILE:
             self._catch_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
 
@@ -1141,12 +1135,12 @@ class MerkleSet:
         if moddepth == 0:
             leafpos = from_bytes(block[pos + 8:pos + 10])
             if leafpos == 0xFFFF:
-                self._catch_branch(self._ref(block[pos:pos + 8]), 8, len(self.subblock_lengths) - 1)
+                self._catch_branch_inner(self._ref(block[pos:pos + 8]), 8, len(self.subblock_lengths) - 1)
             else:
                 self._catch_leaf(self._ref(block[pos:pos + 8], leafpos))
             return
         if get_type(block, pos) == EMPTY:
-            r = self._collapse_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
+            r = self._collapse_branch_inner(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
             if r != None:
                 block[pos:pos + 64] = r
             return
@@ -1169,12 +1163,12 @@ class MerkleSet:
             if leafpos == 0xFFFF:
                 r = self._collapse_branch(self._ref(block[pos:pos + 8]))
             else:
-                r = self._collapse_leaf(self._ref(block[pos:pos + 8]))
+                r = self._collapse_leaf(self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]))
             if r != None:
                 block[pos:pos + 10] = bytes(10)
             return r
-        t0 = get_type(block[pos])
-        t1 = get_type(block[pos + 32])
+        t0 = get_type(block, pos)
+        t1 = get_type(block, pos + 32)
         if t0 == TERMINAL and t1 == TERMINAL:
             r = block[pos:pos + 64]
             block[pos:pos + 64] = bytes(64)
@@ -1546,25 +1540,48 @@ class MiddleNode:
         self.low.audit()
         self.high.audit()            
 
+def _testlazy(numhashes, mset, roots, proofss):
+    hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
+    checkpoint = numhashes // 2
+    for i in range(numhashes - 1):
+        if i == checkpoint:
+            r, proof = mset.is_included_already_hashed(hashes[checkpoint // 2])
+            assert r
+            assert proof == proofss[i][checkpoint // 2]
+        mset.add_already_hashed(hashes[i])
+        mset.audit()
+    r, proof = mset.is_included_already_hashed(hashes[checkpoint])
+    assert r
+    assert proof == proofss[-1][checkpoint]
+
 def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
     hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
-    roots = []
-    proofss = []
+    if oldroots is None:
+        making_new = True
+        roots = []
+        proofss = []
+    else:
+        making_new = False
+        roots = oldroots
+        proofss = oldproofss
     assert mset.get_root() == BLANK
     mset.audit()
     for i in range(numhashes):
-        roots.append(mset.get_root())
-        if oldroots is not None:
-            assert oldroots[i] == roots[i]
-        proofs = []
+        if not making_new:
+            assert roots[i] == mset.get_root()
+            proofs = proofss[i]
+        else:
+            roots.append(mset.get_root())
+            proofs = []
         for j in range(numhashes):
             r, proof = mset.is_included_already_hashed(hashes[j])
             assert r == (j < i)
-            if oldproofss is not None:
-                assert oldproofss[i][j] == proof
-            proofs.append(proof)
-            assert confirm_included_already_hashed(roots[-1], hashes[j], proof) == r
-            assert confirm_not_included_already_hashed(roots[-1], hashes[j], proof) == (not r)
+            if not making_new:
+                assert proofss[i][j] == proof
+            else:
+                proofs.append(proof)
+            assert confirm_included_already_hashed(roots[i], hashes[j], proof) == r
+            assert confirm_not_included_already_hashed(roots[i], hashes[j], proof) == (not r)
         if i > 0:
             mset.add_already_hashed(hashes[i-1])
             mset.audit()
@@ -1579,8 +1596,8 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
     for i in range(numhashes - 1, -1, -1):
         for k in range(2):
             mset.remove_already_hashed(hashes[i])
-            assert roots[i] == mset.get_root()
             mset.audit()
+            assert roots[i] == mset.get_root(), (roots, mset.get_root())
             for j in range(numhashes):
                 r, proof = mset.is_included_already_hashed(hashes[j])
                 assert r == (j < i)
@@ -1589,6 +1606,10 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 
 def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
-    _testmset(num, MerkleSet(2, 10), roots, proofss)
+    for i in range(1, 5):
+        for j in range(6):
+            _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)
+    _testlazy(num, MerkleSet(1, 100), roots, proofss)
+    _testlazy(num, MerkleSet(10, 100), roots, proofss)
 
 testboth(100)
