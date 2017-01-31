@@ -968,7 +968,6 @@ class MerkleSet:
                 self._catch_branch(block, pos + 64, moddepth - 1)
                 if t1 == INVALID:
                     return DONE, None
-                assert t1 == MIDDLE
                 make_invalid(block, pos)
                 return INVALIDATING, None
             elif r == INVALIDATING:
@@ -1006,7 +1005,7 @@ class MerkleSet:
                     return ONELEFT, left
                 return DONE, None
             elif r == ONELEFT:
-                was_invalid = get_type(block + 32) == INVALID
+                was_invalid = get_type(block, pos + 32) == INVALID
                 block[pos + 32:pos + 64] = val
                 if get_type(block, pos) == TERMINAL:
                     return FRAGILE, None
@@ -1020,7 +1019,6 @@ class MerkleSet:
                 self._catch_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
                 if t0 == INVALID:
                     return DONE, None
-                assert t0 == MIDDLE
                 make_invalid(block, pos + 32)
                 return INVALIDATING, None
             elif r == INVALIDATING:
@@ -1166,7 +1164,7 @@ class MerkleSet:
                 block[pos:pos + 64] = r
             return
         if get_type(block, pos + 32) == EMPTY:
-            r = self._collapse_branch(block, pos + 64, moddepth - 1)
+            r = self._collapse_branch_inner(block, pos + 64, moddepth - 1)
             if r != None:
                 block[pos:pos + 64] = r
 
