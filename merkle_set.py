@@ -1050,7 +1050,7 @@ class MerkleSet:
         rpos = 4 + pos * 68
         next = leaf[:2]
         leaf[rpos:rpos + 2] = leaf[:2]
-        leaf[rpos + 2:rpos + 68] = bytes(68)
+        leaf[rpos + 2:rpos + 68] = bytes(66)
         leaf[:2] = to_bytes(pos, 2)
 
     # returns (status, oneval)
@@ -1122,7 +1122,7 @@ class MerkleSet:
                         return DONE, None
                 if block[rpos:rpos + 32] == toremove:
                     left = block[rpos + 32:rpos + 64]
-                    self._deallocate_leaf_node(node, pos)
+                    self._deallocate_leaf_node(block, pos)
                     return ONELEFT, left
                 return DONE, None
             else:
@@ -1156,7 +1156,7 @@ class MerkleSet:
             if leafpos == 0xFFFF:
                 self._catch_branch(self._ref(block[pos:pos + 8]), 8, len(self.subblock_lengths) - 1)
             else:
-                self._catch_leaf(self._ref(block[pos:pos + 8], leafpos))
+                self._catch_leaf(self._ref(block[pos:pos + 8]), leafpos)
             return
         if get_type(block, pos) == EMPTY:
             r = self._collapse_branch_inner(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
