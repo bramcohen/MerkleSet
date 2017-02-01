@@ -1182,7 +1182,7 @@ class MerkleSet:
             if leafpos == 0xFFFF:
                 r = self._collapse_branch(self._ref(block[pos:pos + 8]))
             else:
-                r = self._collapse_leaf(self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]))
+                r = self._collapse_leaf(self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), block)
             if r != None:
                 block[pos:pos + 10] = bytes(10)
             return r
@@ -1222,12 +1222,14 @@ class MerkleSet:
             return
 
     # returns two hashes string or None
-    def _collapse_leaf(self, leaf, pos):
+    def _collapse_leaf(self, leaf, pos, branch):
         r = self._collapse_leaf_inner(leaf, pos)
         if r != None:
             inputs = from_bytes(leaf[2:4])
             if inputs == 1:
                 self._deallocate(leaf)
+                if branch[:8] == self._deref(leaf):
+                    branch[:8] = bytes(8)
                 return r
             leaf[2:4] = to_bytes(inputs - 1, 2)
         return r
@@ -1603,7 +1605,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 proofs.append(proof)
             assert confirm_included_already_hashed(roots[i], hashes[j], proof) == r
             assert confirm_not_included_already_hashed(roots[i], hashes[j], proof) == (not r)
-        if i > 0 and False:
+        if i > 0:
             mset.add_already_hashed(hashes[i-1])
             mset.audit(hashes[:i])
             assert mset.get_root() == roots[i]
@@ -1615,10 +1617,10 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         mset.audit(hashes[:i+1])
         proofss.append(proofs)
     for i in range(numhashes - 1, -1, -1):
-        for k in range(1):
+        for k in range(2):
             mset.remove_already_hashed(hashes[i])
             mset.audit(hashes[:i])
-            assert roots[i] == mset.get_root(), (roots, mset.get_root())
+            assert roots[i] == mset.get_root()
             for j in range(numhashes):
                 r, proof = mset.is_included_already_hashed(hashes[j])
                 assert r == (j < i)
