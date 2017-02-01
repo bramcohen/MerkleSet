@@ -1060,7 +1060,7 @@ class MerkleSet:
         if get_bit(toremove, depth) == 0:
             t = get_type(block, rpos)
             if t == EMPTY:
-                return DONE
+                return DONE, None
             if t == TERMINAL:
                 t1 = get_type(block, rpos + 32)
                 if block[rpos:rpos + 32] == toremove:
@@ -1106,7 +1106,7 @@ class MerkleSet:
         else:
             t = get_type(block, rpos + 32)
             if t == EMPTY:
-                return DONE
+                return DONE, None
             elif t == TERMINAL:
                 t0 = get_type(block, rpos)
                 if block[rpos + 32:rpos + 64] == toremove:
@@ -1115,7 +1115,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos + 32:rpos + 64] = bytes(32)
-                    if t1 == MIDDLE:
+                    if t0 == MIDDLE:
                         return INVALIDATING, None
                     else:
                         assert t0 == INVALID
