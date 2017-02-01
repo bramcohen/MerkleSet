@@ -1111,7 +1111,7 @@ class MerkleSet:
                 t0 = get_type(block, rpos)
                 if block[rpos + 32:rpos + 64] == toremove:
                     if t0 == TERMINAL:
-                        left = block[rpos + 32:rpos + 64]
+                        left = block[rpos:rpos + 32]
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos + 32:rpos + 64] = bytes(32)
