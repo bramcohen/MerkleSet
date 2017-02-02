@@ -926,7 +926,7 @@ class MerkleSet:
             if p == 0xFFFF:
                 r, val = self._remove_branch(toremove, self._ref(block[pos:pos + 8]), depth)
             else:
-                r, val = self._remove_leaf(toremove, self._ref(block[pos:pos + 8]), p, depth)
+                r, val = self._remove_leaf(toremove, self._ref(block[pos:pos + 8]), p, depth, block)
             if r == ONELEFT:
                 block[pos:pos + 10] = bytes(10)
             return r, val
@@ -1036,12 +1036,14 @@ class MerkleSet:
 
     # returns (status, oneval)
     # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
-    def _remove_leaf(self, toremove, block, pos, depth):
+    def _remove_leaf(self, toremove, block, pos, depth, branch):
         result, val = self._remove_leaf_inner(toremove, block, pos, depth)
         if result == ONELEFT:
             numin = from_bytes(block[2:4])
             if numin == 1:
                 self._deallocate(block)
+                if branch[:8] == self._deref(block):
+                    branch[:8] = bytes(8)
             else:
                 block[2:4] = to_bytes(numin - 1, 2)
         return result, val
