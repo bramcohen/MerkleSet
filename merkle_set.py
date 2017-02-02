@@ -316,7 +316,7 @@ class MerkleSet:
             self._audit_branch(self._deref(self.rootblock), 0, allblocks, e, newhashes)
             assert allblocks == set(self.pointers_to_arrays.keys())
         s = sorted([flip_terminal(x) for x in hashes])
-        assert newhashes == s, (newhashes, s)
+        assert newhashes == s
 
     def _audit_branch(self, branch, depth, allblocks, expected, hashes):
         assert branch not in allblocks
@@ -1093,6 +1093,7 @@ class MerkleSet:
                     t1 = get_type(block, rpos + 32)
                     assert t1 != EMPTY
                     block[rpos:rpos + 32] = val
+                    block[rpos + 64:rpos + 66] = bytes(2)
                     if t1 == TERMINAL:
                         return FRAGILE, None
                     if t1 == MIDDLE and t != INVALID:
@@ -1139,6 +1140,7 @@ class MerkleSet:
                     t0 = get_type(block, rpos)
                     assert t0 != EMPTY
                     block[rpos + 32:rpos + 64] = val
+                    block[rpos + 66:rpos + 68] = bytes(2)
                     if t0 == TERMINAL:
                         return FRAGILE, None
                     if t0 == MIDDLE and t != INVALID:
