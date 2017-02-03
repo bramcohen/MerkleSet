@@ -313,18 +313,18 @@ class MerkleSet:
         else:
             allblocks = set()
             e = (self.root if t == MIDDLE else None)
-            self._audit_branch(self._deref(self.rootblock), 0, allblocks, e, newhashes)
+            self._audit_branch(self._deref(self.rootblock), 0, allblocks, e, newhashes, True)
             assert allblocks == set(self.pointers_to_arrays.keys())
         s = sorted([flip_terminal(x) for x in hashes])
         assert newhashes == s
 
-    def _audit_branch(self, branch, depth, allblocks, expected, hashes):
+    def _audit_branch(self, branch, depth, allblocks, expected, hashes, can_terminate):
         assert branch not in allblocks
         allblocks.add(branch)
         outputs = {}
         branch = self._ref(branch)
         assert len(branch) == 8 + self.subblock_lengths[-1]
-        self._audit_branch_inner(branch, 8, depth, len(self.subblock_lengths) - 1, outputs, allblocks, expected, hashes)
+        self._audit_branch_inner(branch, 8, depth, len(self.subblock_lengths) - 1, outputs, allblocks, expected, hashes, can_terminate)
         active = branch[:8]
         if active != bytes(8):
             assert bytes(active) in outputs
@@ -333,16 +333,16 @@ class MerkleSet:
             allblocks.add(leaf)
             self._audit_whole_leaf(leaf, positions)
 
-    def _audit_branch_inner(self, branch, pos, depth, moddepth, outputs, allblocks, expected, hashes):
+    def _audit_branch_inner(self, branch, pos, depth, moddepth, outputs, allblocks, expected, hashes, can_terminate):
         if moddepth == 0:
             newpos = from_bytes(branch[pos + 8:pos + 10])
             output = bytes(branch[pos:pos + 8])
             assert bytes(output) in self.pointers_to_arrays
             if newpos == 0xFFFF:
-                self._audit_branch(output, depth, allblocks, expected, hashes)
+                self._audit_branch(output, depth, allblocks, expected, hashes, can_terminate)
             else:
                 outputs.setdefault(output, []).append((newpos, expected))
-                self._add_hashes_leaf(self._ref(output), newpos, hashes)
+                self._add_hashes_leaf(self._ref(output), newpos, hashes, can_terminate)
             return
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
@@ -353,12 +353,13 @@ class MerkleSet:
             assert branch[pos:pos + 32] == BLANK
             self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
         elif t0 == TERMINAL:
+            assert can_terminate or t1 != TERMINAL
             assert t1 != EMPTY
             self._audit_branch_inner_empty(branch, pos + 64, moddepth - 1)
             hashes.append(branch[pos:pos + 32])
         else:
             e = (branch[pos:pos + 32] if t0 == MIDDLE else None)
-            self._audit_branch_inner(branch, pos + 64, depth + 1, moddepth - 1, outputs, allblocks, e, hashes)
+            self._audit_branch_inner(branch, pos + 64, depth + 1, moddepth - 1, outputs, allblocks, e, hashes, t1 != EMPTY)
         if t1 == EMPTY:
             assert branch[pos + 32:pos + 64] == BLANK
             self._audit_branch_inner_empty(branch, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
@@ -367,20 +368,21 @@ class MerkleSet:
             hashes.append(branch[pos + 32:pos + 64])
         else:
             e = (branch[pos + 32:pos + 64] if t1 == MIDDLE else None)
-            self._audit_branch_inner(branch, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, outputs, allblocks, e, hashes)
+            self._audit_branch_inner(branch, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, outputs, allblocks, e, hashes, t0 != EMPTY)
 
-    def _add_hashes_leaf(self, leaf, pos, hashes):
+    def _add_hashes_leaf(self, leaf, pos, hashes, can_terminate):
         rpos = 4 + pos * 68
         t0 = get_type(leaf, rpos)
+        t1 = get_type(leaf, rpos + 32)
         if t0 == TERMINAL:
             hashes.append(leaf[rpos:rpos + 32])
+            assert can_terminate or t1 != TERMINAL
         elif t0 != EMPTY:
-            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]), hashes)
-        t1 = get_type(leaf, rpos + 32)
+            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]), hashes, t1 != EMPTY)
         if t1 == TERMINAL:
             hashes.append(leaf[rpos + 32:rpos + 64])
         elif t1 != EMPTY:
-            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]), hashes)
+            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]), hashes, t0 != EMPTY)
 
     def _audit_branch_inner_empty(self, branch, pos, moddepth):
         if moddepth == 0:
@@ -1071,11 +1073,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos:rpos + 32] = bytes(32)
-                    if t1 == MIDDLE:
-                        return INVALIDATING, None
-                    else:
-                        assert t1 == INVALID
-                        return DONE, None
+                    return FRAGILE, None
                 if block[rpos + 32:rpos + 64] == toremove:
                     left = block[rpos:rpos + 32]
                     self._deallocate_leaf_node(block, pos)
@@ -1106,6 +1104,8 @@ class MerkleSet:
                 if t1 == EMPTY:
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]))
+                make_invalid(block, rpos)
+                return INVALIDATING, None
         else:
             t = get_type(block, rpos + 32)
             if t == EMPTY:
@@ -1118,11 +1118,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos + 32:rpos + 64] = bytes(32)
-                    if t0 == MIDDLE:
-                        return INVALIDATING, None
-                    else:
-                        assert t0 == INVALID
-                        return DONE, None
+                    return FRAGILE, None
                 if block[rpos:rpos + 32] == toremove:
                     left = block[rpos + 32:rpos + 64]
                     self._deallocate_leaf_node(block, pos)
@@ -1153,6 +1149,8 @@ class MerkleSet:
                 if t0 == EMPTY:
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]))
+                make_invalid(block, rpos + 32)
+                return INVALIDATING, None
 
     def _catch_branch(self, block, pos, moddepth):
         if moddepth == 0:
@@ -1247,9 +1245,9 @@ class MerkleSet:
         if t0 == TERMINAL and t1 == TERMINAL:
             r = leaf[rpos:rpos + 64]
         elif t0 == EMPTY:
-            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[pos + 66:pos + 68]))
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
         elif t1 == EMPTY:
-            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[pos + 64:pos + 66]))
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]))
         if r is not None:
             leaf[rpos + 2:rpos + 68] = bytes(66)
             leaf[rpos:rpos + 2] = leaf[:2]
