@@ -371,6 +371,7 @@ class MerkleSet:
             self._audit_branch_inner(branch, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, outputs, allblocks, e, hashes, t0 != EMPTY)
 
     def _add_hashes_leaf(self, leaf, pos, hashes, can_terminate):
+        assert pos >= 0
         rpos = 4 + pos * 68
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
@@ -378,11 +379,11 @@ class MerkleSet:
             hashes.append(leaf[rpos:rpos + 32])
             assert can_terminate or t1 != TERMINAL
         elif t0 != EMPTY:
-            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]), hashes, t1 != EMPTY)
+            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]) - 1, hashes, t1 != EMPTY)
         if t1 == TERMINAL:
             hashes.append(leaf[rpos + 32:rpos + 64])
         elif t1 != EMPTY:
-            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]), hashes, t0 != EMPTY)
+            self._add_hashes_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]) - 1, hashes, t0 != EMPTY)
 
     def _audit_branch_inner_empty(self, branch, pos, moddepth):
         if moddepth == 0:
@@ -409,6 +410,7 @@ class MerkleSet:
         assert mycopy[4:] == leaf[4:]
 
     def _audit_whole_leaf_inner(self, leaf, mycopy, pos, expected):
+        assert pos >= 0
         rpos = 4 + pos * 68
         assert mycopy[rpos:rpos + 68] == b'X' * 68
         mycopy[rpos:rpos + 68] = leaf[rpos:rpos + 68]
@@ -426,7 +428,7 @@ class MerkleSet:
             assert leaf[rpos + 64:rpos + 66] == bytes(2)
         else:
             e = (leaf[rpos:rpos + 32] if t0 == MIDDLE else None)
-            self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 64:rpos + 66]), e)
+            self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 64:rpos + 66]) - 1, e)
         if t1 == EMPTY:
             assert leaf[rpos + 32:rpos + 64] == BLANK
             assert leaf[rpos + 66:rpos + 68] == bytes(2)
@@ -434,7 +436,7 @@ class MerkleSet:
             assert leaf[rpos + 66:rpos + 68] == bytes(2)
         else:
             e = (leaf[rpos + 32:rpos + 64] if t1 == MIDDLE else None)
-            self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 66:rpos + 68]), e)
+            self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 66:rpos + 68]) - 1, e)
 
     def _allocate_branch(self):
         b = safearray(8 + self.subblock_lengths[-1])
@@ -484,9 +486,9 @@ class MerkleSet:
     def _force_calculation_leaf(self, block, pos):
         pos = 4 + pos * 68
         if get_type(block, pos) == INVALID:
-            block[pos:pos + 32] = self._force_calculation_leaf(block, from_bytes(block[pos + 64:pos + 66]))
+            block[pos:pos + 32] = self._force_calculation_leaf(block, from_bytes(block[pos + 64:pos + 66]) - 1)
         if get_type(block, pos + 32) == INVALID:
-            block[pos + 32:pos + 64] = self._force_calculation_leaf(block, from_bytes(block[pos + 66:pos + 68]))
+            block[pos + 32:pos + 64] = self._force_calculation_leaf(block, from_bytes(block[pos + 66:pos + 68]) - 1)
         return hasher(block[pos:pos + 64])
 
     def add(self, toadd):
@@ -675,6 +677,7 @@ class MerkleSet:
 
     # returns INVALIDATING, DONE, FULL
     def _add_to_leaf_inner(self, toadd, leaf, pos, depth):
+        assert pos >= 0
         rpos = pos * 68 + 4
         if get_bit(toadd, depth) == 0:
             t = get_type(leaf, rpos)
@@ -705,13 +708,13 @@ class MerkleSet:
                 r, newpos = self._insert_leaf([toadd, oldval0], leaf, depth + 1)
                 if r == FULL:
                     return FULL
-                leaf[rpos + 64:rpos + 66] = to_bytes(newpos, 2)
+                leaf[rpos + 64:rpos + 66] = to_bytes(newpos + 1, 2)
                 make_invalid(leaf, rpos)
                 if get_type(leaf, rpos + 32) == INVALID:
                     return DONE
                 return INVALIDATING
             else:
-                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 64:rpos + 66]), depth + 1)
+                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 64:rpos + 66]) - 1, depth + 1)
                 if r == INVALIDATING:
                     if t == MIDDLE:
                         make_invalid(leaf, rpos)
@@ -747,13 +750,13 @@ class MerkleSet:
                 r, newpos = self._insert_leaf([toadd, oldval1], leaf, depth + 1)
                 if r == FULL:
                     return FULL
-                leaf[rpos + 66:rpos + 68] = to_bytes(newpos, 2)
+                leaf[rpos + 66:rpos + 68] = to_bytes(newpos + 1, 2)
                 make_invalid(leaf, rpos + 32)
                 if get_type(leaf, rpos) == INVALID:
                     return DONE
                 return INVALIDATING
             else:
-                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 66:rpos + 68]), depth + 1)
+                r = self._add_to_leaf_inner(toadd, leaf, from_bytes(leaf[rpos + 66:rpos + 68]) - 1, depth + 1)
                 if r == INVALIDATING:
                     if t == MIDDLE:
                         make_invalid(leaf, rpos + 32)
@@ -783,14 +786,14 @@ class MerkleSet:
         lowpos = None
         highpos = None
         if t0 == MIDDLE or t0 == INVALID:
-            r, lowpos = self._copy_between_leafs_inner(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 64:rfrompos + 66]))
+            r, lowpos = self._copy_between_leafs_inner(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 64:rfrompos + 66]) - 1)
             if r == FULL:
                 assert toleaf[:2] == toleaf[rtopos:rtopos + 2]
                 toleaf[:2] = to_bytes(topos, 2)
                 return FULL, None
         t1 = get_type(fromleaf, rfrompos + 32)
         if t1 == MIDDLE or t1 == INVALID:
-            r, highpos = self._copy_between_leafs_inner(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 66:rfrompos + 68]))
+            r, highpos = self._copy_between_leafs_inner(fromleaf, toleaf, from_bytes(fromleaf[rfrompos + 66:rfrompos + 68]) - 1)
             if r == FULL:
                 if t0 == MIDDLE or t0 == INVALID:
                     self._delete_from_leaf(toleaf, lowpos)
@@ -799,24 +802,26 @@ class MerkleSet:
                 return FULL, None
         toleaf[rtopos:rtopos + 64] = fromleaf[rfrompos:rfrompos + 64]
         if lowpos is not None:
-            toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos, 2)
+            toleaf[rtopos + 64:rtopos + 66] = to_bytes(lowpos + 1, 2)
         if highpos is not None:
-            toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos, 2)
+            toleaf[rtopos + 66:rtopos + 68] = to_bytes(highpos + 1, 2)
         return DONE, topos
 
     def _delete_from_leaf(self, leaf, pos):
+        assert pos >= 0
         rpos = 4 + pos * 68
         t = get_type(leaf, rpos)
         if t == MIDDLE or t == INVALID:
-            self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]))
+            self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 64:rpos + 66]) - 1)
         t = get_type(leaf, rpos + 32)
         if t == MIDDLE or t == INVALID:
-            self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
+            self._delete_from_leaf(leaf, from_bytes(leaf[rpos + 66:rpos + 68]) - 1)
         leaf[rpos + 2:rpos + 68] = bytes(66)
         leaf[rpos:rpos + 2] = leaf[:2]
         leaf[:2] = to_bytes(pos, 2)
 
     def _copy_leaf_to_branch(self, branch, branchpos, moddepth, leaf, leafpos):
+        assert leafpos >= 0
         rleafpos = 4 + leafpos * 68
         if moddepth == 0:
             active = self._ref(branch[:8])
@@ -832,10 +837,10 @@ class MerkleSet:
         branch[branchpos:branchpos + 64] = leaf[rleafpos:rleafpos + 64]
         t = get_type(leaf, rleafpos)
         if t == MIDDLE or t == INVALID:
-            self._copy_leaf_to_branch(branch, branchpos + 64, moddepth - 1, leaf, from_bytes(leaf[rleafpos + 64:rleafpos + 66]))
+            self._copy_leaf_to_branch(branch, branchpos + 64, moddepth - 1, leaf, from_bytes(leaf[rleafpos + 64:rleafpos + 66]) - 1)
         t = get_type(leaf, rleafpos + 32)
         if t == MIDDLE or t == INVALID:
-            self._copy_leaf_to_branch(branch, branchpos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1, leaf, from_bytes(leaf[rleafpos + 66:rleafpos + 68]))
+            self._copy_leaf_to_branch(branch, branchpos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1, leaf, from_bytes(leaf[rleafpos + 66:rleafpos + 68]) - 1)
 
     # returns (status, pos)
     # status can be INVALIDATING, FULL
@@ -859,10 +864,10 @@ class MerkleSet:
                 leaf[:2] = to_bytes(pos, 2)
                 return FULL, None
             if bits[0] == 0:
-                leaf[lpos + 64:lpos + 66] = to_bytes(laterpos, 2)
+                leaf[lpos + 64:lpos + 66] = to_bytes(laterpos + 1, 2)
                 make_invalid(leaf, lpos)
             else:
-                leaf[lpos + 66:lpos + 68] = to_bytes(laterpos, 2)
+                leaf[lpos + 66:lpos + 68] = to_bytes(laterpos + 1, 2)
                 make_invalid(leaf, lpos + 32)
                 leaf[lpos:lpos + 2] = bytes(2)
             return INVALIDATING, pos
@@ -872,7 +877,7 @@ class MerkleSet:
                 leaf[:2] = to_bytes(pos, 2)
                 return FULL, None
             leaf[lpos + 32:lpos + 64] = things[2]
-            leaf[lpos + 64:lpos + 66] = to_bytes(laterpos, 2)
+            leaf[lpos + 64:lpos + 66] = to_bytes(laterpos + 1, 2)
             make_invalid(leaf, lpos)
         else:
             r, laterpos = self._insert_leaf([things[1], things[2]], leaf, depth + 1)
@@ -880,7 +885,7 @@ class MerkleSet:
                 leaf[:2] = to_bytes(pos, 2)
                 return FULL, None
             leaf[lpos:lpos + 32] = things[0]
-            leaf[lpos + 66:lpos + 68] = to_bytes(laterpos, 2)
+            leaf[lpos + 66:lpos + 68] = to_bytes(laterpos + 1, 2)
             make_invalid(leaf, lpos + 32)
         return INVALIDATING, pos
 
@@ -1051,6 +1056,7 @@ class MerkleSet:
         return result, val
 
     def _deallocate_leaf_node(self, leaf, pos):
+        assert pos >= 0
         rpos = 4 + pos * 68
         next = leaf[:2]
         leaf[rpos:rpos + 2] = leaf[:2]
@@ -1064,6 +1070,7 @@ class MerkleSet:
     # returns (status, oneval)
     # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
     def _remove_leaf_inner(self, toremove, block, pos, depth):
+        assert pos >= 0
         rpos = 4 + pos * 68
         if get_bit(toremove, depth) == 0:
             t = get_type(block, rpos)
@@ -1077,7 +1084,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos:rpos + 32] = bytes(32)
-                    if self._is_endpoint(block, from_bytes(block[rpos + 66:rpos + 68])):
+                    if self._is_endpoint(block, from_bytes(block[rpos + 66:rpos + 68]) - 1):
                         return FRAGILE, None
                     return INVALIDATING, None
                 if block[rpos + 32:rpos + 64] == toremove:
@@ -1086,7 +1093,7 @@ class MerkleSet:
                     return ONELEFT, left
                 return DONE, None
             else:
-                r, val = self._remove_leaf_inner(toremove, block, from_bytes(block[rpos + 64:rpos + 66]), depth + 1)
+                r, val = self._remove_leaf_inner(toremove, block, from_bytes(block[rpos + 64:rpos + 66]) - 1, depth + 1)
                 if r == DONE:
                     return DONE, None
                 if r == INVALIDATING:
@@ -1102,14 +1109,14 @@ class MerkleSet:
                     block[rpos + 64:rpos + 66] = bytes(2)
                     if t1 == TERMINAL:
                         return FRAGILE, None
-                    if t1 == MIDDLE and t != INVALID:
+                    if t != INVALID and t1 != INVALID:
                         return INVALIDATING, None
                     return DONE, None
                 assert r == FRAGILE
                 t1 = get_type(block, rpos + 32)
                 if t1 == EMPTY:
                     return FRAGILE, None
-                self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]))
+                self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]) - 1)
                 make_invalid(block, rpos)
                 return INVALIDATING, None
         else:
@@ -1124,7 +1131,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos + 32:rpos + 64] = bytes(32)
-                    if self._is_endpoint(block, from_bytes(block[rpos + 64:rpos + 66])):
+                    if self._is_endpoint(block, from_bytes(block[rpos + 64:rpos + 66]) - 1):
                         return FRAGILE, None
                     return INVALIDATING, None
                 if block[rpos:rpos + 32] == toremove:
@@ -1133,13 +1140,13 @@ class MerkleSet:
                     return ONELEFT, left
                 return DONE, None
             else:
-                r, val = self._remove_leaf_inner(toremove, block, from_bytes(block[rpos + 66:rpos + 68]), depth + 1)
+                r, val = self._remove_leaf_inner(toremove, block, from_bytes(block[rpos + 66:rpos + 68]) - 1, depth + 1)
                 if r == DONE:
                     return DONE, None
                 if r == INVALIDATING:
                     if t == MIDDLE:
                         make_invalid(block, rpos + 32)
-                        if get_type(block, rpos + 32) != INVALID:
+                        if get_type(block, rpos) != INVALID:
                             return INVALIDATING, None
                     return DONE, None
                 if r == ONELEFT:
@@ -1149,14 +1156,14 @@ class MerkleSet:
                     block[rpos + 66:rpos + 68] = bytes(2)
                     if t0 == TERMINAL:
                         return FRAGILE, None
-                    if t0 == MIDDLE and t != INVALID:
+                    if t != INVALID and t0 != INVALID:
                         return INVALIDATING, None
                     return DONE, None
                 assert r == FRAGILE
                 t0 = get_type(block, rpos)
                 if t0 == EMPTY:
                     return FRAGILE, None
-                self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]))
+                self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]) - 1)
                 make_invalid(block, rpos + 32)
                 return INVALIDATING, None
 
@@ -1215,17 +1222,18 @@ class MerkleSet:
         return None
 
     def _catch_leaf(self, leaf, pos):
+        assert pos >= 0
         rpos = 4 + pos * 68
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
         if t0 == EMPTY:
-            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 66:rpos + 68]) - 1)
             if r != None:
                 leaf[rpos + 66:rpos + 68] = bytes(2)
                 leaf[rpos:rpos + 64] = r
             return
         if t1 == EMPTY:
-            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]))
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]) - 1)
             if r != None:
                 leaf[rpos + 64:rpos + 66] = bytes(2)
                 leaf[rpos:rpos + 64] = r
@@ -1233,6 +1241,7 @@ class MerkleSet:
 
     # returns two hashes string or None
     def _collapse_leaf(self, leaf, pos, branch):
+        assert pos >= 0
         r = self._collapse_leaf_inner(leaf, pos)
         if r != None:
             inputs = from_bytes(leaf[2:4])
@@ -1246,6 +1255,7 @@ class MerkleSet:
 
     # returns two hashes string or None
     def _collapse_leaf_inner(self, leaf, pos):
+        assert pos >= 0
         rpos = 4 + pos * 68
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
@@ -1255,9 +1265,9 @@ class MerkleSet:
         if t0 == TERMINAL and t1 == TERMINAL:
             r = leaf[rpos:rpos + 64]
         elif t0 == EMPTY:
-            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 66:rpos + 68]))
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 66:rpos + 68]) - 1)
         elif t1 == EMPTY:
-            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]))
+            r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]) - 1)
         if r is not None:
             leaf[rpos + 2:rpos + 68] = bytes(66)
             leaf[rpos:rpos + 2] = leaf[:2]
@@ -1337,6 +1347,7 @@ class MerkleSet:
 
     # returns boolean, appends to buf
     def _is_included_leaf(self, tocheck, block, pos, depth, buf):
+        assert pos >= 0
         pos = 4 + pos * 68
         if block[pos:pos + 32] == tocheck:
             buf.append(bytes([GIVE1]))
@@ -1362,7 +1373,7 @@ class MerkleSet:
             else:
                 buf.append(bytes([GIVE1]))
                 buf.append(block[pos + 32:pos + 64])
-            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]), depth + 1, buf)
+            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]) - 1, depth + 1, buf)
         else:
             t = get_type(block, pos + 32)
             if t == EMPTY:
@@ -1379,7 +1390,7 @@ class MerkleSet:
             else:
                 buf.append(bytes([GIVE0]))
                 buf.append(block[pos:pos + 32])
-            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]), depth + 1, buf)
+            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]) - 1, depth + 1, buf)
 
 class ReferenceMerkleSet:
     def __init__(self):
