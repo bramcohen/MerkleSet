@@ -1566,10 +1566,19 @@ def _testlazy(numhashes, mset, roots, proofss):
             assert r
             assert proof == proofss[i][checkpoint // 2]
         mset.add_already_hashed(hashes[i])
-        mset.audit(hashes[:i])
+        mset.audit(hashes[:i + 1])
     r, proof = mset.is_included_already_hashed(hashes[checkpoint])
     assert r
     assert proof == proofss[-1][checkpoint]
+    for i in range(numhashes - 1, -1, -1):
+        mset.remove_already_hashed(hashes[i])
+        mset.audit(hashes[:i])
+        if i == checkpoint or i == 0:
+            assert roots[i] == mset.get_root()
+            for j in range(numhashes):
+                r, proof = mset.is_included_already_hashed(hashes[j])
+                assert r == (j < i)
+                assert proof == proofss[i][j]
 
 def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
     hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
@@ -1621,13 +1630,12 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 assert proof == proofss[i][j]
     return roots, proofss
 
-def testboth(num):
+def _testall(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
     for i in range(1, 5):
         for j in range(6):
             print('ij', i, j)
             _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)
-    _testlazy(num, MerkleSet(1, 100), roots, proofss)
-    _testlazy(num, MerkleSet(10, 100), roots, proofss)
+            _testlazy(num, MerkleSet(i, 2 ** j), roots, proofss)
 
-testboth(100)
+_testall(200)
