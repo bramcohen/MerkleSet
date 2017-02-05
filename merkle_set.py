@@ -971,6 +971,7 @@ class MerkleSet:
             elif r == FRAGILE:
                 t1 = get_type(block, pos + 32)
                 if t1 == EMPTY:
+                    make_invalid(block, pos)
                     return FRAGILE, None
                 self._catch_branch(block, pos + 64, moddepth - 1)
                 if get_type(block, pos) == INVALID:
@@ -1024,6 +1025,7 @@ class MerkleSet:
             elif r == FRAGILE:
                 t0 = get_type(block, pos)
                 if t0 == EMPTY:
+                    make_invalid(block, pos + 32)
                     return FRAGILE, None
                 self._catch_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
                 if get_type(block, pos + 32) == INVALID:
@@ -1113,6 +1115,7 @@ class MerkleSet:
                 assert r == FRAGILE
                 t1 = get_type(block, rpos + 32)
                 if t1 == EMPTY:
+                    make_invalid(block, rpos)
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]) - 1)
                 if get_type(block, rpos) == INVALID:
@@ -1162,6 +1165,7 @@ class MerkleSet:
                 assert r == FRAGILE
                 t0 = get_type(block, rpos)
                 if t0 == EMPTY:
+                    make_invalid(block, rpos + 32)
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]) - 1)
                 if get_type(block, rpos + 32) == INVALID:
@@ -1619,6 +1623,8 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         mset.add_already_hashed(hashes[i])
         mset.audit(hashes[:i+1])
         proofss.append(proofs)
+    mset.get_root()
+    mset.audit(hashes)
     for i in range(numhashes - 1, -1, -1):
         for k in range(2):
             mset.remove_already_hashed(hashes[i])
@@ -1630,12 +1636,11 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 assert proof == proofss[i][j]
     return roots, proofss
 
-def _testall(num):
+def _testall():
+    num = 200
     roots, proofss = _testmset(num, ReferenceMerkleSet())
     for i in range(1, 5):
         for j in range(6):
             print('ij', i, j)
             _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)
             _testlazy(num, MerkleSet(i, 2 ** j), roots, proofss)
-
-_testall(200)
