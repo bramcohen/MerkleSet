@@ -1057,6 +1057,10 @@ class MerkleSet:
         leaf[rpos + 2:rpos + 68] = bytes(66)
         leaf[:2] = to_bytes(pos, 2)
 
+    def _is_endpoint(self, leaf, pos):
+        rpos = 4 + (pos * 68)
+        return get_type(leaf, rpos) == TERMINAL and get_type(leaf, rpos + 32) == TERMINAL
+
     # returns (status, oneval)
     # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
     def _remove_leaf_inner(self, toremove, block, pos, depth):
@@ -1073,7 +1077,9 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos:rpos + 32] = bytes(32)
-                    return FRAGILE, None
+                    if self._is_endpoint(block, from_bytes(block[rpos + 66:rpos + 68])):
+                        return FRAGILE, None
+                    return INVALIDATING, None
                 if block[rpos + 32:rpos + 64] == toremove:
                     left = block[rpos:rpos + 32]
                     self._deallocate_leaf_node(block, pos)
@@ -1118,7 +1124,9 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos + 32:rpos + 64] = bytes(32)
-                    return FRAGILE, None
+                    if self._is_endpoint(block, from_bytes(block[rpos + 64:rpos + 66])):
+                        return FRAGILE, None
+                    return INVALIDATING, None
                 if block[rpos:rpos + 32] == toremove:
                     left = block[rpos + 32:rpos + 64]
                     self._deallocate_leaf_node(block, pos)
@@ -1241,6 +1249,8 @@ class MerkleSet:
         rpos = 4 + pos * 68
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
+        assert t0 != TERMINAL or t1 == TERMINAL
+        assert t1 != TERMINAL or t0 == TERMINAL
         r = None
         if t0 == TERMINAL and t1 == TERMINAL:
             r = leaf[rpos:rpos + 64]
@@ -1253,37 +1263,6 @@ class MerkleSet:
             leaf[rpos:rpos + 2] = leaf[:2]
             leaf[:2] = to_bytes(pos, 2)
         return r
-
-    def batch_add_and_remove(self, toadd, toremove):
-        self.batch_add_and_remove_already_hashed([sha256(x).digest() for x in toadd], [sha256(x).digest() for x in toremove])
-
-    def batch_add_and_remove_already_hashed(self, toadd, toremove):
-        self._batch_add_and_remove([flip_terminal(x) for x in toadd], [flip_terminal(x) for x in toremove])
-
-    def _batch_add_and_remove(self, toadd, toremove):
-        toadd.sort()
-        toremove.sort()
-        addpos = 0
-        removepos = 0
-        while addpos < len(toadd) and removepos < len(toremove):
-            if toadd[addpos] == toremove[removepos]:
-                last = toadd[addpos]
-                while addpos < len(toadd) and toadd[addpos] == last:
-                    addpos += 1
-                while removepos < len(toremove) and toremove[removepos] == last:
-                    removepos += 1
-            elif toadd[addpos] < toremove[removepos]:
-                self._add(toadd[addpos])
-                addpos += 1
-            else:
-                self._remove(toremove)
-                removepos += 1
-        while removepos < len(toremove):
-            self._remove(toremove)
-            removepos += 1
-        while addpos < len(toadd):
-            self._add(toadd[addpos])
-            addpos += 1
 
     # returns (boolean, proof string)
     def is_included(self, tocheck):
