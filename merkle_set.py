@@ -973,9 +973,11 @@ class MerkleSet:
                 if t1 == EMPTY:
                     return FRAGILE, None
                 self._catch_branch(block, pos + 64, moddepth - 1)
-                if t1 == INVALID:
+                if get_type(block, pos) == INVALID:
                     return DONE, None
                 make_invalid(block, pos)
+                if t1 == INVALID:
+                    return DONE, None
                 return INVALIDATING, None
             elif r == INVALIDATING:
                 t = get_type(block, pos)
@@ -1024,9 +1026,11 @@ class MerkleSet:
                 if t0 == EMPTY:
                     return FRAGILE, None
                 self._catch_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
-                if t0 == INVALID:
+                if get_type(block, pos + 32) == INVALID:
                     return DONE, None
                 make_invalid(block, pos + 32)
+                if t0 == INVALID:
+                    return DONE, None
                 return INVALIDATING, None
             elif r == INVALIDATING:
                 t = get_type(block, pos + 32)
@@ -1063,10 +1067,6 @@ class MerkleSet:
         leaf[rpos + 2:rpos + 68] = bytes(66)
         leaf[:2] = to_bytes(pos, 2)
 
-    def _is_endpoint(self, leaf, pos):
-        rpos = 4 + (pos * 68)
-        return get_type(leaf, rpos) == TERMINAL and get_type(leaf, rpos + 32) == TERMINAL
-
     # returns (status, oneval)
     # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
     def _remove_leaf_inner(self, toremove, block, pos, depth):
@@ -1084,9 +1084,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos:rpos + 32] = bytes(32)
-                    if self._is_endpoint(block, from_bytes(block[rpos + 66:rpos + 68]) - 1):
-                        return FRAGILE, None
-                    return INVALIDATING, None
+                    return FRAGILE, None
                 if block[rpos + 32:rpos + 64] == toremove:
                     left = block[rpos:rpos + 32]
                     self._deallocate_leaf_node(block, pos)
@@ -1117,7 +1115,11 @@ class MerkleSet:
                 if t1 == EMPTY:
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]) - 1)
+                if get_type(block, rpos) == INVALID:
+                    return DONE, None
                 make_invalid(block, rpos)
+                if t1 == INVALID:
+                    return DONE, None
                 return INVALIDATING, None
         else:
             t = get_type(block, rpos + 32)
@@ -1131,9 +1133,7 @@ class MerkleSet:
                         self._deallocate_leaf_node(block, pos)
                         return ONELEFT, left
                     block[rpos + 32:rpos + 64] = bytes(32)
-                    if self._is_endpoint(block, from_bytes(block[rpos + 64:rpos + 66]) - 1):
-                        return FRAGILE, None
-                    return INVALIDATING, None
+                    return FRAGILE, None
                 if block[rpos:rpos + 32] == toremove:
                     left = block[rpos + 32:rpos + 64]
                     self._deallocate_leaf_node(block, pos)
@@ -1164,7 +1164,11 @@ class MerkleSet:
                 if t0 == EMPTY:
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]) - 1)
+                if get_type(block, rpos + 32) == INVALID:
+                    return DONE, None
                 make_invalid(block, rpos + 32)
+                if t0 == INVALID:
+                    return DONE, None
                 return INVALIDATING, None
 
     def _catch_branch(self, block, pos, moddepth):
@@ -1259,8 +1263,6 @@ class MerkleSet:
         rpos = 4 + pos * 68
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
-        assert t0 != TERMINAL or t1 == TERMINAL
-        assert t1 != TERMINAL or t0 == TERMINAL
         r = None
         if t0 == TERMINAL and t1 == TERMINAL:
             r = leaf[rpos:rpos + 64]
@@ -1623,6 +1625,7 @@ def testboth(num):
     roots, proofss = _testmset(num, ReferenceMerkleSet())
     for i in range(1, 5):
         for j in range(6):
+            print('ij', i, j)
             _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)
     _testlazy(num, MerkleSet(1, 100), roots, proofss)
     _testlazy(num, MerkleSet(10, 100), roots, proofss)
