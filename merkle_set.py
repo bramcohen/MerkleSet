@@ -117,6 +117,7 @@ def get_type(mybytes, pos):
     return mybytes[pos] & INVALID
 
 def make_invalid(mybytes, pos):
+    assert get_type(mybytes, pos) != INVALID
     mybytes[pos] |= INVALID
 
 def get_bit(mybytes, pos):
@@ -364,7 +365,7 @@ class MerkleSet:
             self._insert_branch([self.root, toadd], self.rootblock, 8, 0, len(self.subblock_lengths) - 1)
             make_invalid(self.root, 0)
         else:
-            if self._add_to_branch(toadd, self.rootblock, 0) == INVALIDATING:
+            if self._add_to_branch(toadd, self.rootblock, 0) == INVALIDATING and get_type(self.root, 0) != INVALID:
                 make_invalid(self.root, 0)
 
     # returns INVALIDATING, DONE
@@ -770,7 +771,8 @@ class MerkleSet:
             self.rootblock = None
         elif status == FRAGILE:
             self._catch_branch(self.rootblock, 8, len(self.subblock_lengths) - 1)
-            make_invalid(self.root, 0)
+            if get_type(self.root, 0) != INVALID:
+                make_invalid(self.root, 0)
 
     # returns (status, oneval)
     # status can be ONELEFT, FRAGILE, INVALIDATING, DONE
