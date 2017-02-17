@@ -807,11 +807,13 @@ class MerkleSet:
                     return DONE, None
                 assert t == TERMINAL
                 if block[pos:pos + 32] == toremove:
-                    if get_type(block, pos + 32) == TERMINAL:
+                    t1 = get_type(block, pos + 32)
+                    if t1 == TERMINAL:
                         left = block[pos + 32:pos + 64]
                         block[pos:pos + 64] = bytes(64)
                         return ONELEFT, left
                     else:
+                        assert t1 != EMPTY
                         block[pos:pos + 32] = bytes(32)
                         return FRAGILE, None
                 elif block[pos + 32:pos + 64] == toremove:
@@ -981,7 +983,7 @@ class MerkleSet:
                         make_invalid(block, rpos)
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]) - 1)
-                if get_type(block, rpos) == INVALID:
+                if t == INVALID:
                     return DONE, None
                 make_invalid(block, rpos)
                 if t1 == INVALID:
@@ -1048,11 +1050,13 @@ class MerkleSet:
                 self._catch_leaf(self._ref(block[pos:pos + 8]), leafpos)
             return
         if get_type(block, pos) == EMPTY:
+            assert get_type(block, pos + 32) != TERMINAL
             r = self._collapse_branch_inner(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
             if r != None:
                 block[pos:pos + 64] = r
             return
         if get_type(block, pos + 32) == EMPTY:
+            assert get_type(block, pos) != TERMINAL
             r = self._collapse_branch_inner(block, pos + 64, moddepth - 1)
             if r != None:
                 block[pos:pos + 64] = r
