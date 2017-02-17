@@ -41,8 +41,11 @@ patricia[0]: child 8 pos 2
 type: EMPTY or TERMINAL or MIDDLE or INVALID
 
 # first_unused is the start of linked list, 0xFFFF for terminal
+# num_inputs is the number of references from a branch into this leaf
 leaf: first_unused 2 num_inputs 2 [node or emptynode]
+# pos0 and pos1 are one based indexes to make it easy to detect if they are accidently cleared to zero
 node: modified_hash 32 modified_hash 32 pos0 2 pos1 2
+# next is a zero based index
 emptynode: next 2 unused 66
 
 multiproof: subtree
@@ -254,6 +257,7 @@ class MerkleSet:
         leaf = self._ref(leaf)
         assert len(leaf) == 4 + self.leaf_units * 68
         assert len(inputs) == from_bytes(leaf[2:4])
+        # 88 is the ASCII value for 'X'
         mycopy = bytearray([88] * (4 + self.leaf_units * 68))
         for pos, expected in inputs:
             self._audit_whole_leaf_inner(leaf, mycopy, pos, expected)
@@ -476,6 +480,7 @@ class MerkleSet:
                     self._insert_branch(things, newb, 8, depth, len(self.subblock_lengths) - 1)
                     return
                 block[:8] = self._deref(child)
+            # increment the number of inputs in the active child
             child[2:4] = to_bytes(from_bytes(child[2:4]) + 1, 2)
             block[pos:pos + 8] = self._deref(child)
             block[pos + 8:pos + 10] = to_bytes(leafpos, 2)
@@ -509,6 +514,8 @@ class MerkleSet:
         if r != FULL:
             return r
         if from_bytes(leaf[2:4]) == 1:
+            # leaf is full and only has one input
+            # it cannot be split so it must be replaced with a branch
             newb = self._allocate_branch()
             self._copy_leaf_to_branch(newb, 8, len(self.subblock_lengths) - 1, leaf, leafpos)
             self._add_to_branch(toadd, newb, depth)
@@ -832,11 +839,15 @@ class MerkleSet:
                     return DONE, None
             elif r == FRAGILE:
                 t1 = get_type(block, pos + 32)
+                # scan up the tree until the other child is non-empty
                 if t1 == EMPTY:
                     if get_type(block, pos) != INVALID:
                         make_invalid(block, pos)
                     return FRAGILE, None
+                # the other child is non-empty, if the tree can be collapsed
+                # it will be up to the level below this one, so try that
                 self._catch_branch(block, pos + 64, moddepth - 1)
+                # done collasping, continue invalidating if neccessary
                 if get_type(block, pos) == INVALID:
                     return DONE, None
                 make_invalid(block, pos)
@@ -1143,6 +1154,7 @@ class MerkleSet:
         elif t1 == EMPTY:
             r = self._collapse_leaf_inner(leaf, from_bytes(leaf[rpos + 64:rpos + 66]) - 1)
         if r is not None:
+            # this leaf node is being collapsed, deallocate it
             leaf[rpos + 2:rpos + 68] = bytes(66)
             leaf[rpos:rpos + 2] = leaf[:2]
             leaf[:2] = to_bytes(pos, 2)
