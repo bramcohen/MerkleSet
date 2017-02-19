@@ -30,6 +30,7 @@ TODO: add support for continuous self-auditing
 TODO: Try heuristically calculating hashes non-lazily when they're likely to be needed later
 TODO: Try unrolling all this recursivity to improve performance
 TODO: Maybe add a size counter
+TODO: Add combining of multiproofs and looking up a whole multiproof at once
 
 # all unused should be zeroed out
 branch: active_child 8 patricia[size]
@@ -44,27 +45,18 @@ leaf: first_unused 2 num_inputs 2 [node or emptynode]
 node: modified_hash 32 modified_hash 32 pos0 2 pos1 2
 emptynode: next 2 unused 66
 
-# empty and singleton always have proofs of length 0
-clusion_proof: [unit]
-unit: give0 or give1 or empty0 or empty1 or giveboth
-give0: GIVE0 1 modified_hash 32
-give1: GIVE1 1 modified_hash 32
-# optional hash included at end of proof of exclusion
-empty0: EMPTY0 1 (modified_hash 32)
-empty1: EMPTY1 1 (modified_hash 32)
-giveboth: GIVEBOTH 1 modified_hash 32 modified_hash 32
+multiproof: subtree
+subtree: middle or terminal or unvalidated or empty
+middle: MIDDLE 1 subtree subtree
+terminal: hash (terminal type) 32
+unvalidated: hash (invalid type) 32
+empty: EMPTY 1
 """
 
 EMPTY = 0
 TERMINAL = 0x40
 MIDDLE = 0x80
 INVALID = TERMINAL | MIDDLE
-
-GIVE0 = 0
-GIVE1 = 1
-GIVEBOTH = 2
-EMPTY0 = 3
-EMPTY1 = 4
 
 NOTSTARTED = 2
 ONELEFT = 3
@@ -75,51 +67,34 @@ FULL = 7
 
 ERROR = bytes([INVALID]) + urandom(31)
 BLANK = bytes([0] * 32)
-JUNK = bytes([INVALID] * 32)
 
 def flip_terminal(mystr):
     assert len(mystr) == 32
     return bytes([TERMINAL | (mystr[0] & 0x3F)]) + mystr[1:]
 
-def hasher(mystr, can_terminate = True, bits = None, can_fail = False):
+def flip_middle(mystr):
+    assert len(mystr) == 32
+    return bytes([MIDDLE | (mystr[0] & 0x3F)]) + mystr[1:]
+
+def flip_invalid(mystr):
+    assert len(mystr) == 32
+    return bytes([INVALID | (mystr[0] & 0x3F)]) + mystr[1:]
+
+def hasher(mystr):
     assert len(mystr) == 64
-    if mystr[:32] == ERROR or mystr[32:] == ERROR:
-        return ERROR
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
-    if t0 == INVALID or t1 == INVALID:
-        assert can_fail
-        return ERROR
-    if bits is not None:
-        if t0 == TERMINAL:
-            s0 = mystr[:32]
-            for pos, v in enumerate(bits):
-                if get_bit(s0, pos) != v:
-                    assert can_fail
-                    return ERROR
-            if t1 != TERMINAL:
-                if get_bit(s0, len(bits)) != 0:
-                    assert can_fail
-                    return ERROR
-        if t1 == TERMINAL:
-            s1 = mystr[32:]
-            for pos, v in enumerate(bits):
-                if get_bit(s1, pos) != v:
-                    assert can_fail
-                    return ERROR
-            if t0 != TERMINAL:
-                if get_bit(s1, len(bits)) != 1:
-                    assert can_fail
-                    return ERROR
-    if t0 == TERMINAL and t1 == TERMINAL and (mystr[:32] >= mystr[32:] or not can_terminate):
-        assert can_fail
-        return ERROR
+    assert t0 != INVALID and t1 != INVALID
+    if t0 == TERMINAL and t1 == TERMINAL and mystr[:32] >= mystr[32:]:
+        raise SetError()
     if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
-        assert can_fail
-        return ERROR
+        raise SetError()
+    if t0 == EMPTY and t1 == EMPTY:
+        raise SetError()
+    if t0 == EMPTY and mystr[:32] != BLANK:
+        raise SetError()
+    if t1 == EMPTY and mystr[32:] != BLANK:
+        raise SetError()
     if t0 == EMPTY:
-        if mystr[:32] != BLANK or t1 == EMPTY:
-            assert can_fail
-            return ERROR
         v = mystr[63] & 0xF
         if v == 0 or v == 0xF:
             v = mystr[63] & 0xF0
@@ -128,9 +103,6 @@ def hasher(mystr, can_terminate = True, bits = None, can_fail = False):
         else:
             return mystr[32:63] + bytes([mystr[63] & 0xF0])
     elif t1 == EMPTY:
-        if mystr[32:] != BLANK:
-            assert can_fail
-            return ERROR
         v = mystr[31] & 0xF
         if v == 0 or v == 0xF:
             v = mystr[31] & 0xF0
@@ -151,122 +123,6 @@ def get_bit(mybytes, pos):
     assert len(mybytes) == 32
     pos += 2
     return (mybytes[pos // 8] >> (7 - (pos % 8))) & 1
-
-def confirm_included(root, val, proof):
-    return confirm_included_already_hashed(root, sha256(val).digest(), proof)
-
-def confirm_included_already_hashed(root, val, proof):
-    return _confirm_included(root, flip_terminal(val), proof)
-
-def _confirm_included(root, val, proof):
-    assert len(root) == 32
-    a = get_type(root, 0)
-    if a == TERMINAL:
-        if len(proof) != 0:
-            return False
-        return root == val
-    elif a == MIDDLE:
-        return root == _find_implied_root_inclusion([], proof, val)
-    else:
-        return False
-
-def _find_implied_root_inclusion(bits, proof, val, can_terminate = True):
-    if len(bits) > 240:
-        return ERROR
-    if len(proof) == 0:
-        return ERROR
-    t = proof[0]
-    if t == GIVE0:
-        if get_bit(val, len(bits)) == 0:
-            if len(proof) != 33:
-                return ERROR
-            return hasher(proof[1:] + val, can_terminate, bits, True)
-        if len(proof) < 33:
-            return ERROR
-        if len(proof) == 33:
-            return hasher(proof[1:33] + val, can_terminate, bits, True)
-        return hasher(proof[1:33] + _find_implied_root_inclusion(bits + [1], proof[33:], val), False, bits, True)
-    elif t == GIVE1:
-        if get_bit(val, len(bits)) == 1:
-            if len(proof) != 33:
-                return ERROR
-            return hasher(val + proof[1:], can_terminate, bits, True)
-        if len(proof) < 33:
-            return ERROR
-        if len(proof) == 33:
-            return hasher(val + proof[1:33], can_terminate, bits, True)
-        return hasher(_find_implied_root_inclusion(bits + [0], proof[33:], val) + proof[1:33], False, bits, True)
-    elif t == EMPTY0:
-        return hasher(BLANK + _find_implied_root_inclusion(bits + [1], proof[1:], val, False), False, bits, True)
-    elif t == EMPTY1:
-        return hasher(_find_implied_root_inclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits, True)
-    else:
-        return ERROR
-
-def confirm_not_included(root, val, proof):
-    return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
-
-def confirm_not_included_already_hashed(root, val, proof):
-    return _confirm_not_included(root, flip_terminal(val), proof)
-
-def _confirm_not_included(root, val, proof):
-    assert len(root) == 32 and len(val) == 32
-    a = get_type(root, 0)
-    if a == TERMINAL:
-        if len(proof) != 0:
-            return False
-        return root != val
-    elif a == EMPTY:
-        if len(proof) != 0:
-            return False
-        return True
-    elif a == MIDDLE:
-        return root == _find_implied_root_exclusion([], proof, val)
-    else:
-        return False
-
-def _find_implied_root_exclusion(bits, proof, val, can_terminate = True):
-    if len(bits) > 240:
-        return ERROR
-    if len(proof) == 0:
-        return ERROR
-    t = proof[0]
-    if t == GIVE0:
-        if len(proof) < 33 or get_bit(val, len(bits)) == 0:
-            return ERROR
-        return hasher(proof[1:33] + _find_implied_root_exclusion(bits + [1], proof[33:], val), can_terminate, bits, True)
-    elif t == GIVE1:
-        if len(proof) < 33 or get_bit(val, len(bits)) == 1:
-            return ERROR
-        return hasher(_find_implied_root_exclusion(bits + [0], proof[33:], val) + proof[1:33], can_terminate, bits, True)
-    elif t == GIVEBOTH:
-        if len(proof) != 65:
-            return ERROR
-        if val == proof[1:33] or val == proof[33:]:
-            return ERROR
-        if get_bit(val, len(bits)) == 0:
-            if get_type(proof, 1) != TERMINAL:
-                return ERROR
-        else:
-            if get_type(proof, 33) != TERMINAL:
-                return ERROR
-        return hasher(proof[1:], can_terminate, bits, True)
-    elif t == EMPTY0:
-        if get_bit(val, len(bits)) == 0:
-            if len(proof) != 33:
-                return ERROR
-            return hasher(BLANK + proof[1:33], False, bits, True)
-        else:
-            return hasher(BLANK + _find_implied_root_exclusion(bits + [1], proof[1:], val, False), False, bits, True)
-    elif t == EMPTY1:
-        if get_bit(val, len(bits)) == 1:
-            if len(proof) != 33:
-                return ERROR
-            return hasher(proof[1:] + BLANK, False, bits, True)
-        else:
-            return hasher(_find_implied_root_exclusion(bits + [0], proof[1:], val, False) + BLANK, False, bits, True)
-    else:
-        return ERROR
 
 class safearray(bytearray):
     def __setitem__(self, index, thing):
@@ -506,7 +362,7 @@ class MerkleSet:
                 return
             self.rootblock = self._allocate_branch()
             self._insert_branch([self.root, toadd], self.rootblock, 8, 0, len(self.subblock_lengths) - 1)
-            self.root[0:] = JUNK
+            make_invalid(self.root, 0)
         else:
             if self._add_to_branch(toadd, self.rootblock, 0) == INVALIDATING:
                 make_invalid(self.root, 0)
@@ -602,6 +458,7 @@ class MerkleSet:
                 return DONE
 
     def _insert_branch(self, things, block, pos, depth, moddepth):
+        assert 2 <= len(things) <= 3
         if moddepth == 0:
             child = self._ref(block[:8])
             r = FULL
@@ -845,6 +702,7 @@ class MerkleSet:
     # returns (status, pos)
     # status can be INVALIDATING, FULL
     def _insert_leaf(self, things, leaf, depth):
+        assert 2 <= len(things) <= 3
         for thing in things:
             assert len(thing) == 32
         pos = from_bytes(leaf[:2])
@@ -971,7 +829,8 @@ class MerkleSet:
             elif r == FRAGILE:
                 t1 = get_type(block, pos + 32)
                 if t1 == EMPTY:
-                    make_invalid(block, pos)
+                    if get_type(block, pos) != INVALID:
+                        make_invalid(block, pos)
                     return FRAGILE, None
                 self._catch_branch(block, pos + 64, moddepth - 1)
                 if get_type(block, pos) == INVALID:
@@ -1025,7 +884,8 @@ class MerkleSet:
             elif r == FRAGILE:
                 t0 = get_type(block, pos)
                 if t0 == EMPTY:
-                    make_invalid(block, pos + 32)
+                    if get_type(block, pos + 32) != INVALID:
+                        make_invalid(block, pos + 32)
                     return FRAGILE, None
                 self._catch_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
                 if get_type(block, pos + 32) == INVALID:
@@ -1115,7 +975,8 @@ class MerkleSet:
                 assert r == FRAGILE
                 t1 = get_type(block, rpos + 32)
                 if t1 == EMPTY:
-                    make_invalid(block, rpos)
+                    if t != INVALID:
+                        make_invalid(block, rpos)
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 64:rpos + 66]) - 1)
                 if get_type(block, rpos) == INVALID:
@@ -1165,7 +1026,8 @@ class MerkleSet:
                 assert r == FRAGILE
                 t0 = get_type(block, rpos)
                 if t0 == EMPTY:
-                    make_invalid(block, rpos + 32)
+                    if t != INVALID:
+                        make_invalid(block, rpos + 32)
                     return FRAGILE, None
                 self._catch_leaf(block, from_bytes(block[rpos + 66:rpos + 68]) - 1)
                 if get_type(block, rpos + 32) == INVALID:
@@ -1294,9 +1156,9 @@ class MerkleSet:
         self.get_root()
         t = get_type(self.root, 0)
         if t == EMPTY:
-            return False, b''
+            return False, bytes([EMPTY])
         if t == TERMINAL:
-            return tocheck == self.root, b''
+            return tocheck == self.root, self.root
         assert t == MIDDLE
         r = self._is_included_branch(tocheck, self.rootblock, 8, 0, len(self.subblock_lengths) - 1, buf)
         return r, b''.join([bytes(x) for x in buf])
@@ -1308,258 +1170,319 @@ class MerkleSet:
                 return self._is_included_branch(tocheck, self._ref(block[pos:pos + 8]), 8, depth, len(self.subblock_lengths) - 1, buf)
             else:
                 return self._is_included_leaf(tocheck, self._ref(block[pos:pos + 8]), from_bytes(block[pos + 8:pos + 10]), depth, buf)
-        if block[pos:pos + 32] == tocheck:
-            buf.append(bytes([GIVE1]))
-            buf.append(block[pos + 32:pos + 64])
-            return True
-        if block[pos + 32:pos + 64] == tocheck:
-            buf.append(bytes([GIVE0]))
-            buf.append(block[pos:pos + 32])
+        buf.append(bytes([MIDDLE]))
+        if block[pos:pos + 32] == tocheck or block[pos + 32:pos + 64] == tocheck:
+            _finish_proof(block[pos:pos + 64], depth, buf)
             return True
         if get_bit(tocheck, depth) == 0:
             t = get_type(block, pos)
-            if t == EMPTY:
-                buf.append(bytes([EMPTY0]))
-                buf.append(block[pos + 32:pos + 64])
-                return False
-            if t == TERMINAL:
-                buf.append(bytes([GIVEBOTH]))
-                buf.append(block[pos:pos + 64])
+            if t == EMPTY or t == TERMINAL:
+                _finish_proof(block[pos:pos + 64], depth, buf)
                 return False
             assert t == MIDDLE
-            if get_type(block, pos + 32) == EMPTY:
-                buf.append(bytes([EMPTY1]))
-            else:
-                buf.append(bytes([GIVE1]))
-                buf.append(block[pos + 32:pos + 64])
-            return self._is_included_branch(tocheck, block, pos + 64, depth + 1, moddepth - 1, buf)
+            r = self._is_included_branch(tocheck, block, pos + 64, depth + 1, moddepth - 1, buf)
+            buf.append(_quick_summary(block[pos + 32:pos + 64]))
+            return r
         else:
             t = get_type(block, pos + 32)
-            if t == EMPTY:
-                buf.append(bytes([EMPTY1]))
-                buf.append(block[pos:pos + 32])
-                return False
-            if t == TERMINAL:
-                buf.append(bytes([GIVEBOTH]))
-                buf.append(block[pos:pos + 64])
+            if t == EMPTY or t == TERMINAL:
+                _finish_proof(block[pos:pos + 64], depth, buf)
                 return False
             assert t == MIDDLE
-            if get_type(block, pos) == EMPTY:
-                buf.append(bytes([EMPTY0]))
-            else:
-                buf.append(bytes([GIVE0]))
-                buf.append(block[pos:pos + 32])
+            buf.append(_quick_summary(block[pos:pos + 32]))
             return self._is_included_branch(tocheck, block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1, buf)
 
     # returns boolean, appends to buf
     def _is_included_leaf(self, tocheck, block, pos, depth, buf):
         assert pos >= 0
         pos = 4 + pos * 68
-        if block[pos:pos + 32] == tocheck:
-            buf.append(bytes([GIVE1]))
-            buf.append(block[pos + 32:pos + 64])
-            return True
-        if block[pos + 32:pos + 64] == tocheck:
-            buf.append(bytes([GIVE0]))
-            buf.append(block[pos:pos + 32])
+        buf.append(bytes([MIDDLE]))
+        if block[pos:pos + 32] == tocheck or block[pos + 32:pos + 64] == tocheck:
+            _finish_proof(block[pos:pos + 64], depth, buf)
             return True
         if get_bit(tocheck, depth) == 0:
             t = get_type(block, pos)
-            if t == EMPTY:
-                buf.append(bytes([EMPTY0]))
-                buf.append(block[pos + 32:pos + 64])
-                return False
-            if t == TERMINAL:
-                buf.append(bytes([GIVEBOTH]))
-                buf.append(block[pos:pos + 64])
+            if t == EMPTY or t == TERMINAL:
+                _finish_proof(block[pos:pos + 64], depth, buf)
                 return False
             assert t == MIDDLE
-            if get_type(block, pos + 32) == EMPTY:
-                buf.append(bytes([EMPTY1]))
-            else:
-                buf.append(bytes([GIVE1]))
-                buf.append(block[pos + 32:pos + 64])
-            return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]) - 1, depth + 1, buf)
+            r = self._is_included_leaf(tocheck, block, from_bytes(block[pos + 64:pos + 66]) - 1, depth + 1, buf)
+            buf.append(_quick_summary(block[pos + 32:pos + 64]))
+            return r
         else:
             t = get_type(block, pos + 32)
-            if t == EMPTY:
-                buf.append(bytes([EMPTY1]))
-                buf.append(block[pos:pos + 32])
-                return False
-            if t == TERMINAL:
-                buf.append(bytes([GIVEBOTH]))
-                buf.append(block[pos:pos + 64])
+            if t == EMPTY or t == TERMINAL:
+                _finish_proof(block[pos:pos + 64], depth, buf)
                 return False
             assert t == MIDDLE
-            if get_type(block, pos) == EMPTY:
-                buf.append(bytes([EMPTY0]))
-            else:
-                buf.append(bytes([GIVE0]))
-                buf.append(block[pos:pos + 32])
+            buf.append(_quick_summary(block[pos:pos + 32]))
             return self._is_included_leaf(tocheck, block, from_bytes(block[pos + 66:pos + 68]) - 1, depth + 1, buf)
 
+def _finish_proof(val, depth, buf):
+    v0 = val[:32]
+    v1 = val[32:]
+    if get_type(v0, 0) == TERMINAL and get_type(v1, 0) == TERMINAL:
+        b0 = get_bit(v0, depth)
+        b1 = get_bit(v1, depth)
+        if b0 == b1:
+            if b0 == 0:
+                buf.append(bytes([MIDDLE]))
+                _finish_proof(val, depth + 1, buf)
+                buf.append(bytes([EMPTY]))
+            else:
+                buf.append(bytes([EMPTY]))
+                buf.append(bytes([MIDDLE]))
+                _finish_proof(val, depth + 1, buf)
+            return
+    buf.append(_quick_summary(v0))
+    buf.append(_quick_summary(v1))
+
+def _quick_summary(val):
+    t = get_type(val, 0)
+    if t == EMPTY:
+        return bytes([EMPTY])
+    if t == TERMINAL:
+        return val
+    assert t == MIDDLE
+    return flip_invalid(val)
+
+def confirm_included(root, val, proof):
+    return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
+
+def confirm_included_already_hashed(root, val, proof):
+    return _confirm(root, val, proof, True)
+
+def confirm_not_included(root, val, proof):
+    return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
+
+def confirm_not_included_already_hashed(root, val, proof):
+    return _confirm(root, val, proof, False)
+
+class SetError(BaseException):
+    pass
+
+def _confirm(root, val, proof, expected):
+    try:
+        p = deserialize_proof(proof)
+        if p.get_root() != root:
+            return False
+        r, junk = p.is_included_already_hashed(val)
+        return r == expected
+    except SetError:
+        return False
+
+def deserialize_proof(proof):
+    try:
+        r, pos = _deserialize(proof, 0, [])
+        if pos != len(proof):
+            raise SetError()
+        return ReferenceMerkleSet(r)
+    except IndexError:
+        raise SetError()
+
+def _deserialize(proof, pos, bits):
+    t = proof[pos] & INVALID
+    if t == EMPTY:
+        return _empty, pos + 1
+    if t == TERMINAL:
+        return TerminalNode(proof[pos:pos + 32], bits), pos + 32
+    if t == INVALID:
+        return UnknownNode(flip_middle(proof[pos:pos + 32])), pos + 32
+    v0, pos = _deserialize(proof, pos + 1, bits + [0])
+    v1, pos = _deserialize(proof, pos, bits + [1])
+    return MiddleNode([v0, v1]), pos
+
 class ReferenceMerkleSet:
-    def __init__(self):
-        self.root = EmptyNode(0)
+    def __init__(self, root = None):
+        self.root = root
+        if root is None:
+            self.root = _empty
 
     def get_root(self):
         return self.root.hash
 
     def add_already_hashed(self, toadd):
-        toadd = flip_terminal(toadd)
-        self.root = self.root.add(toadd)
+        self.root = self.root.add(flip_terminal(toadd), 0)
 
     def remove_already_hashed(self, toremove):
-        toremove = flip_terminal(toremove)
-        self.root = self.root.remove(toremove)
+        self.root = self.root.remove(flip_terminal(toremove), 0)
 
     def is_included_already_hashed(self, tocheck):
         tocheck = flip_terminal(tocheck)
-        if self.root.size == 0:
-            return False, b''
-        if self.root.size == 1:
-            return tocheck == self.root.hash, b''
-        return self.root.is_included(tocheck)
+        p = []
+        r = self.root.is_included(tocheck, 0, p)
+        return r, b''.join(p)
 
     def audit(self, hashes):
-        assert self.root.depth == 0
         newhashes = []
-        self.root.audit(newhashes)
+        self.root.audit(newhashes, [])
+        assert newhashes == sorted(newhashes)
         assert newhashes == sorted([flip_terminal(x) for x in hashes])
 
 class EmptyNode:
-    def __init__(self, depth):
+    def __init__(self):
         self.hash = BLANK
-        self.size = 0
-        self.depth = depth
 
-    def add(self, toadd):
-        return TerminalNode(toadd, self.depth)
+    def is_empty(self):
+        return True
 
-    def remove(self, toremove):
+    def is_terminal(self):
+        return False
+
+    def is_double(self):
+        raise SetError()
+
+    def add(self, toadd, depth):
+        return TerminalNode(toadd)
+
+    def remove(self, toremove, depth):
         return self
 
-    def audit(self, hashes):
+    def is_included(self, tocheck, depth, p):
+        p.append(bytes([EMPTY]))
+        return False
+
+    def other_included(self, tocheck, depth, p, collapse):
+        p.append(bytes([EMPTY]))
+
+    def audit(self, hashes, bits):
         pass
 
+_empty = EmptyNode()
+
 class TerminalNode:
-    def __init__(self, hash, depth):
+    def __init__(self, hash, bits = None):
         assert len(hash) == 32
         self.hash = hash
-        self.depth = depth
-        self.size = 1
+        if bits is not None:
+            self.audit([], bits)
 
-    def add(self, toadd):
+    def is_empty(self):
+        return False
+
+    def is_terminal(self):
+        return True
+
+    def is_double(self):
+        raise SetError()
+
+    def add(self, toadd, depth):
         if toadd == self.hash:
             return self
-        return self._make_middle(self.hash, toadd, self.depth)
+        return self._make_middle([TerminalNode(min(self.hash, toadd)), TerminalNode(max(self.hash, toadd))], depth)
 
-    def _make_middle(self, thinga, thingb, depth):
-        ta = get_bit(thinga, depth)
-        tb = get_bit(thingb, depth)
-        if ta == tb:
-            if ta == 0:
-                return MiddleNode(self._make_middle(thinga, thingb, depth + 1), EmptyNode(depth + 1), depth)
-            return MiddleNode(EmptyNode(depth + 1), self._make_middle(thinga, thingb, depth + 1), depth)
-        else:
-            if ta == 0:
-                return MiddleNode(TerminalNode(thinga, depth + 1), TerminalNode(thingb, depth + 1), depth)
-            return MiddleNode(TerminalNode(thingb, depth + 1), TerminalNode(thinga, depth + 1), depth)
+    def _make_middle(self, children, depth):
+        cbits = [get_bit(children[i].hash, depth) for i in range(2)]
+        if cbits[0] != cbits[1]:
+            return MiddleNode(children)
+        nextvals = [None, None]
+        nextvals[cbits[0] ^ 1] = _empty
+        nextvals[cbits[0]] = self._make_middle(children, depth + 1)
+        return MiddleNode(nextvals)
 
-    def remove(self, toremove):
+    def remove(self, toremove, depth):
         if toremove == self.hash:
-            return EmptyNode(self.depth)
+            return _empty
         return self
 
-    def audit(self, hashes):
+    def is_included(self, tocheck, depth, p):
+        p.append(self.hash)
+        return tocheck == self.hash
+
+    def other_included(self, tocheck, depth, p, collapse):
+        p.append(self.hash)
+
+    def audit(self, hashes, bits):
         hashes.append(self.hash)
+        for pos, v in enumerate(bits):
+            assert get_bit(self.hash, pos) == v
 
 class MiddleNode:
-    def __init__(self, low, high, depth):
-        assert low.depth == depth + 1
-        assert high.depth == depth + 1
-        self.depth = depth
-        self.low = low
-        self.high = high
-        self.size = low.size + high.size
-        if low.size == 0 and high.size == 2:
-            self.hash = high.hash
-        elif high.size == 0 and low.size == 2:
-            self.hash = low.hash
+    def __init__(self, children):
+        self.children = children
+        for i in range(2):
+            if self.children[i^1].is_empty() and self.children[i].is_double():
+                self.hash = self.children[i].hash
+                break
         else:
-            self.hash = hasher(low.hash + high.hash)
+            self.hash = hasher(children[0].hash + children[1].hash)
 
-    def add(self, toadd):
-        if get_bit(toadd, self.depth) == 0:
-            r = self.low.add(toadd)
-            if r == self.low:
-                return self
-            return MiddleNode(r, self.high, self.depth)
+    def is_empty(self):
+        return False
+
+    def is_terminal(self):
+        return False
+
+    def is_double(self):
+        for i in range(2):
+            if self.children[i^1].is_empty():
+                return self.children[i].is_double()
+        return self.children[0].is_terminal() and self.children[1].is_terminal()
+
+    def add(self, toadd, depth):
+        bit = get_bit(toadd, depth)
+        child = self.children[bit]
+        newchild = child.add(toadd, depth + 1)
+        if newchild is child:
+            return self
+        newvals = [x for x in self.children]
+        newvals[bit] = newchild
+        return MiddleNode(newvals)
+
+    def remove(self, toremove, depth):
+        bit = get_bit(toremove, depth)
+        child = self.children[bit]
+        newchild = child.remove(toremove, depth + 1)
+        if newchild is child:
+            return self
+        otherchild = self.children[bit ^ 1]
+        if newchild.is_empty() and otherchild.is_terminal():
+            return otherchild
+        if newchild.is_terminal() and otherchild.is_empty():
+            return newchild
+        newvals = [x for x in self.children]
+        newvals[bit] = newchild
+        return MiddleNode(newvals)
+
+    def is_included(self, tocheck, depth, p):
+        p.append(bytes([MIDDLE]))
+        bit = get_bit(tocheck, depth)
+        r = None
+        for i in range(2):
+            if bit == i:
+                r = self.children[i].is_included(tocheck, depth + 1, p)
+            else:
+                self.children[i].other_included(tocheck, depth + 1, p, not self.children[i ^ 1].is_empty())
+        return r
+
+    def other_included(self, tocheck, depth, p, collapse):
+        if collapse or not self.is_double():
+            p.append(flip_invalid(self.hash))
         else:
-            r = self.high.add(toadd)
-            if r == self.high:
-                return self
-            return MiddleNode(self.low, r, self.depth)
+            self.is_included(tocheck, depth, p)
 
-    def remove(self, toremove):
-        if get_bit(toremove, self.depth) == 0:
-            r = self.low.remove(toremove)
-            if r == self.low:
-                return self
-            a, b = r, self.high
-        else:
-            r = self.high.remove(toremove)
-            if r == self.high:
-                return self
-            a, b = self.low, r
-        if a.size == 0 and b.size == 1:
-            return TerminalNode(b.hash, self.depth)
-        if b.size == 0 and a.size == 1:
-            return TerminalNode(a.hash, self.depth)
-        return MiddleNode(a, b, self.depth)
+    def audit(self, hashes, bits):
+        for i in range(2):
+            self.children[i].audit(hashes, bits + [i])
 
-    def is_included(self, tocheck):
-        if self.size == 2:
-            if self.low.size == 0:
-                return self.high.is_included(tocheck)
-            if self.high.size == 0:
-                return self.low.is_included(tocheck)
-            if tocheck == self.low.hash:
-                return True, bytes([GIVE1]) + self.high.hash
-            if tocheck == self.high.hash:
-                return True, bytes([GIVE0]) + self.low.hash
-            return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
-        b = get_bit(tocheck, self.depth)
-        if b == 0:
-            if self.low.size == 0:
-                return False, bytes([EMPTY0]) + self.high.hash
-            if self.low.size == 1:
-                if tocheck == self.low.hash:
-                    return True, bytes([GIVE1]) + self.high.hash
-                return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
-            r, p = self.low.is_included(tocheck)
-            if self.high.size == 0:
-                return r, bytes([EMPTY1]) + p
-            return r, bytes([GIVE1]) + self.high.hash + p
-        else:
-            if self.high.size == 0:
-                return False, bytes([EMPTY1]) + self.low.hash
-            if self.high.size == 1:
-                if tocheck == self.high.hash:
-                    return True, bytes([GIVE0]) + self.low.hash
-                return False, bytes([GIVEBOTH]) + self.low.hash + self.high.hash
-            r, p = self.high.is_included(tocheck)
-            if self.low.size == 0:
-                return r, bytes([EMPTY0]) + p
-            return r, bytes([GIVE0]) + self.low.hash + p
+class UnknownNode:
+    def __init__(self, hash):
+        self.hash = hash
 
-    def audit(self, hashes):
-        assert self.low.depth == self.depth + 1
-        assert self.high.depth == self.depth + 1
-        assert self.size == self.low.size + self.high.size
-        assert self.size >= 2
-        self.low.audit(hashes)
-        self.high.audit(hashes)
+    def is_empty(self):
+        return False
+
+    def is_terminal(self):
+        return False
+
+    def is_double(self):
+        return False
+
+    def is_included(self, tocheck, depth, p):
+        raise SetError()
+
+    def other_included(self, tocheck, depth, p, collapse):
+        p.append(flip_invalid(self.hash))
 
 def _testlazy(numhashes, mset, roots, proofss):
     hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
@@ -1636,11 +1559,10 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 assert proof == proofss[i][j]
     return roots, proofss
 
-def _testall():
+def testall():
     num = 200
     roots, proofss = _testmset(num, ReferenceMerkleSet())
     for i in range(1, 5):
         for j in range(6):
-            print('ij', i, j)
             _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)
             _testlazy(num, MerkleSet(i, 2 ** j), roots, proofss)
