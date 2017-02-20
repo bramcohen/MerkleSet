@@ -1533,8 +1533,10 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 assert proofss[i][j] == proof
             else:
                 proofs.append(proof)
-            assert confirm_included_already_hashed(roots[i], hashes[j], proof) == r
-            assert confirm_not_included_already_hashed(roots[i], hashes[j], proof) == (not r)
+            if r:
+                assert confirm_included_already_hashed(roots[i], hashes[j], proof)
+            else:
+                assert confirm_not_included_already_hashed(roots[i], hashes[j], proof)
         if i > 0:
             mset.add_already_hashed(hashes[i-1])
             mset.audit(hashes[:i])
