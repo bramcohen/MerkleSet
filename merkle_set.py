@@ -103,16 +103,11 @@ def hasher(mystr):
     assert len(mystr) == 64
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
     assert t0 != INVALID and t1 != INVALID
-    if t0 == TERMINAL and t1 == TERMINAL and mystr[:32] >= mystr[32:]:
-        raise SetError()
-    if (t0 == TERMINAL and t1 == EMPTY) or (t0 == EMPTY and t1 == TERMINAL):
-        raise SetError()
-    if t0 == EMPTY and t1 == EMPTY:
-        raise SetError()
-    if t0 == EMPTY and mystr[:32] != BLANK:
-        raise SetError()
-    if t1 == EMPTY and mystr[32:] != BLANK:
-        raise SetError()
+    if (t0 == EMPTY or t0 == TERMINAL) and (t1 == EMPTY or t1 == TERMINAL):
+        assert t0 == TERMINAL and t1 == TERMINAL
+        assert mystr[:32] < mystr[32:]
+    assert t0 != EMPTY or mystr[:32] == BLANK
+    assert t1 != EMPTY or mystr[32:] == BLANK
     r = blake2s(bytes(mystr)).digest()
     return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
@@ -1301,11 +1296,15 @@ def deserialize_proof(proof):
 def _deserialize(proof, pos, bits):
     t = proof[pos] & INVALID
     if t == EMPTY:
+        if proof[pos] != EMPTY:
+            raise SetError()
         return _empty, pos + 1
     if t == TERMINAL:
         return TerminalNode(proof[pos:pos + 32], bits), pos + 32
     if t == INVALID:
         return UnknownNode(flip_middle(proof[pos:pos + 32])), pos + 32
+    if proof[pos] != MIDDLE:
+        raise SetError()
     v0, pos = _deserialize(proof, pos + 1, bits + [0])
     v1, pos = _deserialize(proof, pos, bits + [1])
     return MiddleNode([v0, v1]), pos
@@ -1423,7 +1422,13 @@ class MiddleNode:
                 self.hash = self.children[i].hash
                 break
         else:
-            self.hash = hasher(children[0].hash + children[1].hash)
+            if (children[0].is_empty() or children[0].is_terminal()) and (children[1].is_empty() or children[1].is_terminal()):
+                if children[0].is_empty() or children[1].is_empty():
+                    raise SetError()
+                if children[0].hash >= children[1].hash:
+                    raise SetError()
+            r = blake2s(children[0].hash + children[1].hash).digest()
+            self.hash = bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
     def is_empty(self):
         return False
