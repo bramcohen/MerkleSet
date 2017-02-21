@@ -41,7 +41,7 @@ patricia[0]: child 8 pos 2
 type: EMPTY or TERMINAL or MIDDLE or INVALID
 
 # first_unused is the start of linked list, 0xFFFF for terminal
-# num_inputs is the number of references from a branch into this leaf
+# num_inputs is the number of references from the parent branch into this leaf
 leaf: first_unused 2 num_inputs 2 [node or emptynode]
 # pos0 and pos1 are one based indexes to make it easy to detect if they are accidently cleared to zero
 node: modified_hash 32 modified_hash 32 pos0 2 pos1 2
