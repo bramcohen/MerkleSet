@@ -99,7 +99,7 @@ def flip_invalid(mystr):
     assert len(mystr) == 32
     return bytes([INVALID | (mystr[0] & 0x3F)]) + mystr[1:]
 
-def hasher(mystr):
+def hashaudit(mystr):
     assert len(mystr) == 64
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
     assert t0 != INVALID and t1 != INVALID
@@ -108,6 +108,9 @@ def hasher(mystr):
         assert mystr[:32] < mystr[32:]
     assert t0 != EMPTY or mystr[:32] == BLANK
     assert t1 != EMPTY or mystr[32:] == BLANK
+    return hashdown(mystr)
+
+def hashdown(mystr):
     r = blake2s(bytes(mystr)).digest()
     return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
@@ -202,7 +205,7 @@ class MerkleSet:
         t0 = get_type(branch, pos)
         t1 = get_type(branch, pos + 32)
         if expected is not None:
-            assert t0 != INVALID and t1 != INVALID and hasher(branch[pos:pos + 64]) == expected
+            assert t0 != INVALID and t1 != INVALID and hashaudit(branch[pos:pos + 64]) == expected
         if t0 == EMPTY:
             assert t1 != EMPTY and t1 != TERMINAL
             assert branch[pos:pos + 32] == BLANK
@@ -273,7 +276,7 @@ class MerkleSet:
         t0 = get_type(leaf, rpos)
         t1 = get_type(leaf, rpos + 32)
         if expected is not None:
-            assert t0 != INVALID and t1 != INVALID and hasher(leaf[rpos:rpos + 64]) == expected
+            assert t0 != INVALID and t1 != INVALID and hashaudit(leaf[rpos:rpos + 64]) == expected
         if t0 == EMPTY:
             assert t1 != EMPTY
             assert t1 != TERMINAL
@@ -337,7 +340,7 @@ class MerkleSet:
             block[pos:pos + 32] = self._force_calculation_branch(block, pos + 64, moddepth - 1)
         if get_type(block, pos + 32) == INVALID:
             block[pos + 32:pos + 64] = self._force_calculation_branch(block, pos + 64 + self.subblock_lengths[moddepth - 1], moddepth - 1)
-        return hasher(block[pos:pos + 64])
+        return hashaudit(block[pos:pos + 64])
 
     def _force_calculation_leaf(self, block, pos):
         pos = 4 + pos * 68
@@ -345,7 +348,7 @@ class MerkleSet:
             block[pos:pos + 32] = self._force_calculation_leaf(block, from_bytes(block[pos + 64:pos + 66]) - 1)
         if get_type(block, pos + 32) == INVALID:
             block[pos + 32:pos + 64] = self._force_calculation_leaf(block, from_bytes(block[pos + 66:pos + 68]) - 1)
-        return hasher(block[pos:pos + 64])
+        return hashaudit(block[pos:pos + 64])
 
     def add(self, toadd):
         return self.add_already_hashed(sha256(toadd).digest())
@@ -1427,8 +1430,7 @@ class MiddleNode:
                     raise SetError()
                 if children[0].hash >= children[1].hash:
                     raise SetError()
-            r = blake2s(children[0].hash + children[1].hash).digest()
-            self.hash = bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
+            self.hash = hashdown(children[0].hash + children[1].hash)
 
     def is_empty(self):
         return False
