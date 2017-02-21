@@ -113,22 +113,6 @@ def hasher(mystr):
         raise SetError()
     if t1 == EMPTY and mystr[32:] != BLANK:
         raise SetError()
-    if t0 == EMPTY:
-        v = mystr[63] & 0xF
-        if v == 0 or v == 0xF:
-            v = mystr[63] & 0xF0
-            if v != 0 and v != 0xF0:
-                return mystr[32:63] + bytes([mystr[63] & 0x0F])
-        else:
-            return mystr[32:63] + bytes([mystr[63] & 0xF0])
-    elif t1 == EMPTY:
-        v = mystr[31] & 0xF
-        if v == 0 or v == 0xF:
-            v = mystr[31] & 0xF0
-            if v != 0 and v != 0xF0:
-                return mystr[:31] + bytes([mystr[31] | 0xF0])
-        else:
-            return mystr[:31] + bytes([mystr[31] | 0x0F])
     r = blake2s(bytes(mystr)).digest()
     return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
 
