@@ -32,6 +32,9 @@ TODO: Try unrolling all this recursivity to improve performance
 TODO: Maybe add a size counter
 TODO: Add combining of multiproofs and looking up a whole multiproof at once
 
+# The active child is the leaf where overflow is currently sent to
+# When the active child is filled, a new empty one is made
+# When a leaf overflows, the data is sent to the active child of the parent branch
 # all unused should be zeroed out
 branch: active_child 8 patricia[size]
 patricia[n]: modified_hash 32 modified_hash 32 patricia[n-1] patricia[n-1]
@@ -45,6 +48,10 @@ leaf: first_unused 2 num_inputs 2 [node or emptynode]
 node: modified_hash 32 modified_hash 32 pos0 2 pos1 2
 emptynode: next 2 unused 66
 
+# Unvalidated means two or more children if the sibling isn't empty
+# Unvalidated means more than two children if the sibling is empty
+# For a proof of exclusion when the sibling contains two things they 
+# must both be given so validation can be performed
 multiproof: subtree
 subtree: middle or terminal or unvalidated or empty
 middle: MIDDLE 1 subtree subtree
@@ -58,8 +65,17 @@ TERMINAL = 0x40
 MIDDLE = 0x80
 INVALID = TERMINAL | MIDDLE
 
+# Returned in branch updates when the terminal was unused
 NOTSTARTED = 2
+# Returned in removal when there's only one left
 ONELEFT = 3
+# Returned when there might be only two things below
+# Bubbles upwards as long as there's an empty sibling
+# When a non-empty sibling is hit, it calls catch on the layer below
+# On catch, collapse is called on everything below
+# Collapse returns None if it has more than two things, or both if both terminal
+# If there is an empty child, collapse passes through the return of its non-empty child
+# Collapse clears out if it's returning something other than None
 FRAGILE = 4
 INVALIDATING = 5
 DONE = 6
@@ -1533,10 +1549,10 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 assert proofss[i][j] == proof
             else:
                 proofs.append(proof)
-            if r:
-                assert confirm_included_already_hashed(roots[i], hashes[j], proof)
-            else:
-                assert confirm_not_included_already_hashed(roots[i], hashes[j], proof)
+                if r:
+                    assert confirm_included_already_hashed(roots[i], hashes[j], proof)
+                else:
+                    assert confirm_not_included_already_hashed(roots[i], hashes[j], proof)
         if i > 0:
             mset.add_already_hashed(hashes[i-1])
             mset.audit(hashes[:i])
