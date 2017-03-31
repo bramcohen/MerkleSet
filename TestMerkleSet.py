@@ -7,6 +7,7 @@ def from_bytes(f):
 def to_bytes(f, v):
     return int.to_bytes(f, v, 'big')
 
+# Add numhashes things, only checking the hash halfway through to test lazy evaluation
 def _testlazy(numhashes, mset, roots, proofss):
     hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
     checkpoint = numhashes // 2
@@ -42,6 +43,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         proofss = oldproofss
     assert mset.get_root() == BLANK
     mset.audit([])
+    # Add numhashes things one at a time, comparing to previously generated roots and proofs
     for i in range(numhashes):
         if not making_new:
             assert roots[i] == mset.get_root()
@@ -49,6 +51,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         else:
             roots.append(mset.get_root())
             proofs = []
+        # After each addition check inclusion of everything which has been added or will be added
         for j in range(numhashes):
             r, proof = mset.is_included_already_hashed(hashes[j])
             assert r == (j < i)
@@ -61,6 +64,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
                 else:
                     assert confirm_not_included_already_hashed(roots[i], hashes[j], proof)
         if i > 0:
+            # Add a second time to check idempotence
             mset.add_already_hashed(hashes[i-1])
             mset.audit(hashes[:i])
             assert mset.get_root() == roots[i]
@@ -73,6 +77,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         proofss.append(proofs)
     mset.get_root()
     mset.audit(hashes)
+    # Remove everything one at a time checking in that direction as well
     for i in range(numhashes - 1, -1, -1):
         for k in range(2):
             mset.remove_already_hashed(hashes[i])
@@ -87,6 +92,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
 def testall():
     num = 200
     roots, proofss = _testmset(num, ReferenceMerkleSet())
+    # Test with a range of values of both parameters
     for i in range(1, 5):
         for j in range(6):
             _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)

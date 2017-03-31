@@ -18,6 +18,8 @@ Skips repeated hashing of exactly two things even when they share prefix bits
 Proofs are multiproofs, and support proving including/exclusion for a large number of values in 
 a single string. They're a serialization of a subset of the tree.
 
+Proof format:
+
 multiproof: subtree
 subtree: middle or terminal or unvalidated or empty
 middle: MIDDLE 1 subtree subtree
@@ -170,7 +172,7 @@ class MiddleNode:
                 break
         else:
             if (children[0].is_empty() or children[0].is_terminal()) and (children[1].is_empty() or children[1].is_terminal()):
-                if children[0].is_empty() or children[1].is_empty(): # AUGH
+                if children[0].is_empty() or children[1].is_empty():
                     raise SetError()
                 if children[0].hash >= children[1].hash:
                     raise SetError()

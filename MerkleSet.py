@@ -1,36 +1,30 @@
 from hashlib import blake2s, sha256
-from os import urandom
 
-def from_bytes(f):
-    return int.from_bytes(f, 'big')
-
-def to_bytes(f, v):
-    return int.to_bytes(f, v, 'big')
+from ReferenceMerkleSet import *
 
 __all__ = ['confirm_included', 'confirm_included_already_hashed', 'confirm_not_included', 
         'confirm_not_included_already_hashed', 'MerkleSet']
 
 """
+The behavior of this implementation is semantically identical to the one in ReferenceMerkleSet
+
 Advantages of this merkle tree implementation:
 Lazy root calculation
 Few l1 and l2 cache misses
-Low CPU requirements
 Good memory efficiency
-Good interaction with normal memory allocators
-Small proofs of inclusion/exclusion
-Reasonably simple implementation
 Reasonable defense against malicious insertion attacks
 
 TODO: Port to C
 TODO: Optimize! Benchmark!
 TODO: Make sure that data structures don't get garbled on an out of memory error
-TODO: Add an iterator
 TODO: add multi-threading support
 TODO: add support for continuous self-auditing
 TODO: Try heuristically calculating hashes non-lazily when they're likely to be needed later
 TODO: Try unrolling all this recursivity to improve performance
 TODO: Maybe add a size counter
 TODO: Add combining of multiproofs and looking up a whole multiproof at once
+
+Branch memory allocation data format:
 
 # The active child is the leaf where overflow is currently sent to
 # When the active child is filled, a new empty one is made
@@ -43,6 +37,8 @@ patricia[0]: child 8 pos 2
 # modified_hash[0] & 0xC0 is the type
 type: EMPTY or TERMINAL or MIDDLE or INVALID
 
+Leaf memory allocation data format:
+
 # first_unused is the start of linked list, 0xFFFF for terminal
 # num_inputs is the number of references from the parent branch into this leaf
 leaf: first_unused 2 num_inputs 2 [node or emptynode]
@@ -50,29 +46,13 @@ leaf: first_unused 2 num_inputs 2 [node or emptynode]
 node: modified_hash 32 modified_hash 32 pos0 2 pos1 2
 # next is a zero based index
 emptynode: next 2 unused 66
-
-# Unvalidated means two or more children if the sibling isn't empty
-# Unvalidated means more than two children if the sibling is empty
-# For a proof of exclusion when the sibling contains two things they 
-# must both be given so validation can be performed
-multiproof: subtree
-subtree: middle or terminal or unvalidated or empty
-middle: MIDDLE 1 subtree subtree
-terminal: hash (terminal type) 32
-unvalidated: hash (invalid type) 32
-empty: EMPTY 1
 """
-
-EMPTY = 0
-TERMINAL = 0x40
-MIDDLE = 0x80
-INVALID = TERMINAL | MIDDLE
 
 # Returned in branch updates when the terminal was unused
 NOTSTARTED = 2
 # Returned in removal when there's only one left
 ONELEFT = 3
-# Returned when there might be only two things below
+# Fragile is returned when there might be only two things below
 # Bubbles upwards as long as there's an empty sibling
 # When a non-empty sibling is hit, it calls catch on the layer below
 # On catch, collapse is called on everything below
@@ -84,21 +64,13 @@ INVALIDATING = 5
 DONE = 6
 FULL = 7
 
-ERROR = bytes([INVALID]) + urandom(31)
-BLANK = bytes([0] * 32)
+def from_bytes(f):
+    return int.from_bytes(f, 'big')
 
-def flip_terminal(mystr):
-    assert len(mystr) == 32
-    return bytes([TERMINAL | (mystr[0] & 0x3F)]) + mystr[1:]
+def to_bytes(f, v):
+    return int.to_bytes(f, v, 'big')
 
-def flip_middle(mystr):
-    assert len(mystr) == 32
-    return bytes([MIDDLE | (mystr[0] & 0x3F)]) + mystr[1:]
-
-def flip_invalid(mystr):
-    assert len(mystr) == 32
-    return bytes([INVALID | (mystr[0] & 0x3F)]) + mystr[1:]
-
+# Sanity checking on top of the hash function
 def hashaudit(mystr):
     assert len(mystr) == 64
     t0, t1 = get_type(mystr, 0), get_type(mystr, 32)
@@ -110,10 +82,6 @@ def hashaudit(mystr):
     assert t1 != EMPTY or mystr[32:] == BLANK
     return hashdown(mystr)
 
-def hashdown(mystr):
-    r = blake2s(bytes(mystr)).digest()
-    return bytes([MIDDLE | (r[0] & 0x3F)]) + r[1:]
-
 def get_type(mybytes, pos):
     return mybytes[pos] & INVALID
 
@@ -121,11 +89,7 @@ def make_invalid(mybytes, pos):
     assert get_type(mybytes, pos) != INVALID
     mybytes[pos] |= INVALID
 
-def get_bit(mybytes, pos):
-    assert len(mybytes) == 32
-    pos += 2
-    return (mybytes[pos // 8] >> (7 - (pos % 8))) & 1
-
+# Bounds checking for the win
 class safearray(bytearray):
     def __setitem__(self, index, thing):
         if type(index) is slice:
@@ -147,6 +111,10 @@ class safearray(bytearray):
         bytearray.__setitem__(self, index, thing)
 
 class MerkleSet:
+    # depth sets the size of branches, it's power of two scale with a smallest value of 0
+    # leaf_units is the size of leaves, its smallest possible value is 1
+    # Optimal values for both of those are heavily dependent on the memory architecture of 
+    # the particular machine
     def __init__(self, depth, leaf_units):
         self.subblock_lengths = [10]
         while len(self.subblock_lengths) <= depth:
@@ -157,6 +125,7 @@ class MerkleSet:
         self.pointers_to_arrays = {}
         self.rootblock = None
 
+    # Only used by test code, makes sure internal state is consistent
     def audit(self, hashes):
         newhashes = []
         t = get_type(self.root, 0)
@@ -297,11 +266,13 @@ class MerkleSet:
             e = (leaf[rpos + 32:rpos + 64] if t1 == MIDDLE else None)
             self._audit_whole_leaf_inner(leaf, mycopy, from_bytes(leaf[rpos + 66:rpos + 68]) - 1, e)
 
+    # In C this should be malloc/new
     def _allocate_branch(self):
         b = safearray(8 + self.subblock_lengths[-1])
         self.pointers_to_arrays[self._deref(b)] = b
         return b
 
+    # In C this should be malloc/new
     def _allocate_leaf(self):
         leaf = safearray(4 + self.leaf_units * 68)
         for i in range(self.leaf_units):
@@ -310,15 +281,18 @@ class MerkleSet:
         self.pointers_to_arrays[self._deref(leaf)] = leaf
         return leaf
 
+    # In C this should be calloc/free
     def _deallocate(self, thing):
         del self.pointers_to_arrays[self._deref(thing)]
 
+    # In C this should be *
     def _ref(self, ref):
         assert len(ref) == 8
         if ref == bytes(8):
             return None
         return self.pointers_to_arrays[bytes(ref)]
 
+    # In C this should be &
     def _deref(self, thing):
         assert thing is not None
         return to_bytes(id(thing), 8)
@@ -350,6 +324,7 @@ class MerkleSet:
             block[pos + 32:pos + 64] = self._force_calculation_leaf(block, from_bytes(block[pos + 66:pos + 68]) - 1)
         return hashaudit(block[pos:pos + 64])
 
+    # Convenience function
     def add(self, toadd):
         return self.add_already_hashed(sha256(toadd).digest())
 
@@ -506,7 +481,7 @@ class MerkleSet:
                 self._insert_branch(things[1:], block, pos + 64 + self.subblock_lengths[moddepth - 1], depth + 1, moddepth - 1)
                 make_invalid(block, pos + 32)
 
-    # state can be INVALIDATING, DONE
+    # returns INVALIDATING, DONE
     def _add_to_leaf(self, toadd, branch, branchpos, leaf, leafpos, depth):
         r = self._add_to_leaf_inner(toadd, leaf, leafpos, depth)
         if r != FULL:
@@ -753,6 +728,7 @@ class MerkleSet:
             make_invalid(leaf, lpos + 32)
         return INVALIDATING, pos
 
+    # Convenience function
     def remove(self, toremove):
         return self.remove_already_hashed(sha256(toremove).digest())
 
@@ -1158,7 +1134,7 @@ class MerkleSet:
             leaf[:2] = to_bytes(pos, 2)
         return r
 
-    # returns (boolean, proof string)
+    # Convenience function
     def is_included(self, tocheck):
         return self.is_included_already_hashed(sha256(tocheck).digest())
 
@@ -1261,335 +1237,3 @@ def _quick_summary(val):
         return val
     assert t == MIDDLE
     return flip_invalid(val)
-
-def confirm_included(root, val, proof):
-    return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
-
-def confirm_included_already_hashed(root, val, proof):
-    return _confirm(root, val, proof, True)
-
-def confirm_not_included(root, val, proof):
-    return confirm_not_included_already_hashed(root, sha256(val).digest(), proof)
-
-def confirm_not_included_already_hashed(root, val, proof):
-    return _confirm(root, val, proof, False)
-
-class SetError(BaseException):
-    pass
-
-def _confirm(root, val, proof, expected):
-    try:
-        p = deserialize_proof(proof)
-        if p.get_root() != root:
-            return False
-        r, junk = p.is_included_already_hashed(val)
-        return r == expected
-    except SetError:
-        return False
-
-def deserialize_proof(proof):
-    try:
-        r, pos = _deserialize(proof, 0, [])
-        if pos != len(proof):
-            raise SetError()
-        return ReferenceMerkleSet(r)
-    except IndexError:
-        raise SetError()
-
-def _deserialize(proof, pos, bits):
-    t = proof[pos] & INVALID
-    if t == EMPTY:
-        if proof[pos] != EMPTY:
-            raise SetError()
-        return _empty, pos + 1
-    if t == TERMINAL:
-        return TerminalNode(proof[pos:pos + 32], bits), pos + 32
-    if t == INVALID:
-        return UnknownNode(flip_middle(proof[pos:pos + 32])), pos + 32
-    if proof[pos] != MIDDLE:
-        raise SetError()
-    v0, pos = _deserialize(proof, pos + 1, bits + [0])
-    v1, pos = _deserialize(proof, pos, bits + [1])
-    return MiddleNode([v0, v1]), pos
-
-class ReferenceMerkleSet:
-    def __init__(self, root = None):
-        self.root = root
-        if root is None:
-            self.root = _empty
-
-    def get_root(self):
-        return self.root.hash
-
-    def add_already_hashed(self, toadd):
-        self.root = self.root.add(flip_terminal(toadd), 0)
-
-    def remove_already_hashed(self, toremove):
-        self.root = self.root.remove(flip_terminal(toremove), 0)
-
-    def is_included_already_hashed(self, tocheck):
-        tocheck = flip_terminal(tocheck)
-        p = []
-        r = self.root.is_included(tocheck, 0, p)
-        return r, b''.join(p)
-
-    def audit(self, hashes):
-        newhashes = []
-        self.root.audit(newhashes, [])
-        assert newhashes == sorted(newhashes)
-        assert newhashes == sorted([flip_terminal(x) for x in hashes])
-
-class EmptyNode:
-    def __init__(self):
-        self.hash = BLANK
-
-    def is_empty(self):
-        return True
-
-    def is_terminal(self):
-        return False
-
-    def is_double(self):
-        raise SetError()
-
-    def add(self, toadd, depth):
-        return TerminalNode(toadd)
-
-    def remove(self, toremove, depth):
-        return self
-
-    def is_included(self, tocheck, depth, p):
-        p.append(bytes([EMPTY]))
-        return False
-
-    def other_included(self, tocheck, depth, p, collapse):
-        p.append(bytes([EMPTY]))
-
-    def audit(self, hashes, bits):
-        pass
-
-_empty = EmptyNode()
-
-class TerminalNode:
-    def __init__(self, hash, bits = None):
-        assert len(hash) == 32
-        self.hash = hash
-        if bits is not None:
-            self.audit([], bits)
-
-    def is_empty(self):
-        return False
-
-    def is_terminal(self):
-        return True
-
-    def is_double(self):
-        raise SetError()
-
-    def add(self, toadd, depth):
-        if toadd == self.hash:
-            return self
-        return self._make_middle([TerminalNode(min(self.hash, toadd)), TerminalNode(max(self.hash, toadd))], depth)
-
-    def _make_middle(self, children, depth):
-        cbits = [get_bit(children[i].hash, depth) for i in range(2)]
-        if cbits[0] != cbits[1]:
-            return MiddleNode(children)
-        nextvals = [None, None]
-        nextvals[cbits[0] ^ 1] = _empty
-        nextvals[cbits[0]] = self._make_middle(children, depth + 1)
-        return MiddleNode(nextvals)
-
-    def remove(self, toremove, depth):
-        if toremove == self.hash:
-            return _empty
-        return self
-
-    def is_included(self, tocheck, depth, p):
-        p.append(self.hash)
-        return tocheck == self.hash
-
-    def other_included(self, tocheck, depth, p, collapse):
-        p.append(self.hash)
-
-    def audit(self, hashes, bits):
-        hashes.append(self.hash)
-        for pos, v in enumerate(bits):
-            assert get_bit(self.hash, pos) == v
-
-class MiddleNode:
-    def __init__(self, children):
-        self.children = children
-        for i in range(2):
-            if self.children[i^1].is_empty() and self.children[i].is_double():
-                self.hash = self.children[i].hash
-                break
-        else:
-            if (children[0].is_empty() or children[0].is_terminal()) and (children[1].is_empty() or children[1].is_terminal()):
-                if children[0].is_empty() or children[1].is_empty():
-                    raise SetError()
-                if children[0].hash >= children[1].hash:
-                    raise SetError()
-            self.hash = hashdown(children[0].hash + children[1].hash)
-
-    def is_empty(self):
-        return False
-
-    def is_terminal(self):
-        return False
-
-    def is_double(self):
-        for i in range(2):
-            if self.children[i^1].is_empty():
-                return self.children[i].is_double()
-        return self.children[0].is_terminal() and self.children[1].is_terminal()
-
-    def add(self, toadd, depth):
-        bit = get_bit(toadd, depth)
-        child = self.children[bit]
-        newchild = child.add(toadd, depth + 1)
-        if newchild is child:
-            return self
-        newvals = [x for x in self.children]
-        newvals[bit] = newchild
-        return MiddleNode(newvals)
-
-    def remove(self, toremove, depth):
-        bit = get_bit(toremove, depth)
-        child = self.children[bit]
-        newchild = child.remove(toremove, depth + 1)
-        if newchild is child:
-            return self
-        otherchild = self.children[bit ^ 1]
-        if newchild.is_empty() and otherchild.is_terminal():
-            return otherchild
-        if newchild.is_terminal() and otherchild.is_empty():
-            return newchild
-        newvals = [x for x in self.children]
-        newvals[bit] = newchild
-        return MiddleNode(newvals)
-
-    def is_included(self, tocheck, depth, p):
-        p.append(bytes([MIDDLE]))
-        bit = get_bit(tocheck, depth)
-        r = None
-        for i in range(2):
-            if bit == i:
-                r = self.children[i].is_included(tocheck, depth + 1, p)
-            else:
-                self.children[i].other_included(tocheck, depth + 1, p, not self.children[i ^ 1].is_empty())
-        return r
-
-    def other_included(self, tocheck, depth, p, collapse):
-        if collapse or not self.is_double():
-            p.append(flip_invalid(self.hash))
-        else:
-            self.is_included(tocheck, depth, p)
-
-    def audit(self, hashes, bits):
-        for i in range(2):
-            self.children[i].audit(hashes, bits + [i])
-
-class UnknownNode:
-    def __init__(self, hash):
-        self.hash = hash
-
-    def is_empty(self):
-        return False
-
-    def is_terminal(self):
-        return False
-
-    def is_double(self):
-        return False
-
-    def is_included(self, tocheck, depth, p):
-        raise SetError()
-
-    def other_included(self, tocheck, depth, p, collapse):
-        p.append(flip_invalid(self.hash))
-
-def _testlazy(numhashes, mset, roots, proofss):
-    hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
-    checkpoint = numhashes // 2
-    for i in range(numhashes - 1):
-        if i == checkpoint:
-            r, proof = mset.is_included_already_hashed(hashes[checkpoint // 2])
-            assert r
-            assert proof == proofss[i][checkpoint // 2]
-        mset.add_already_hashed(hashes[i])
-        mset.audit(hashes[:i + 1])
-    r, proof = mset.is_included_already_hashed(hashes[checkpoint])
-    assert r
-    assert proof == proofss[-1][checkpoint]
-    for i in range(numhashes - 1, -1, -1):
-        mset.remove_already_hashed(hashes[i])
-        mset.audit(hashes[:i])
-        if i == checkpoint or i == 0:
-            assert roots[i] == mset.get_root()
-            for j in range(numhashes):
-                r, proof = mset.is_included_already_hashed(hashes[j])
-                assert r == (j < i)
-                assert proof == proofss[i][j]
-
-def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
-    hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
-    if oldroots is None:
-        making_new = True
-        roots = []
-        proofss = []
-    else:
-        making_new = False
-        roots = oldroots
-        proofss = oldproofss
-    assert mset.get_root() == BLANK
-    mset.audit([])
-    for i in range(numhashes):
-        if not making_new:
-            assert roots[i] == mset.get_root()
-            proofs = proofss[i]
-        else:
-            roots.append(mset.get_root())
-            proofs = []
-        for j in range(numhashes):
-            r, proof = mset.is_included_already_hashed(hashes[j])
-            assert r == (j < i)
-            if not making_new:
-                assert proofss[i][j] == proof
-            else:
-                proofs.append(proof)
-                if r:
-                    assert confirm_included_already_hashed(roots[i], hashes[j], proof)
-                else:
-                    assert confirm_not_included_already_hashed(roots[i], hashes[j], proof)
-        if i > 0:
-            mset.add_already_hashed(hashes[i-1])
-            mset.audit(hashes[:i])
-            assert mset.get_root() == roots[i]
-            for j in range(numhashes):
-                r, proof = mset.is_included_already_hashed(hashes[j])
-                assert proof == proofs[j]
-                assert r == (j < i)
-        mset.add_already_hashed(hashes[i])
-        mset.audit(hashes[:i+1])
-        proofss.append(proofs)
-    mset.get_root()
-    mset.audit(hashes)
-    for i in range(numhashes - 1, -1, -1):
-        for k in range(2):
-            mset.remove_already_hashed(hashes[i])
-            mset.audit(hashes[:i])
-            assert roots[i] == mset.get_root()
-            for j in range(numhashes):
-                r, proof = mset.is_included_already_hashed(hashes[j])
-                assert r == (j < i)
-                assert proof == proofss[i][j]
-    return roots, proofss
-
-def testall():
-    num = 200
-    roots, proofss = _testmset(num, ReferenceMerkleSet())
-    for i in range(1, 5):
-        for j in range(6):
-            _testmset(num, MerkleSet(i, 2 ** j), roots, proofss)
-            _testlazy(num, MerkleSet(i, 2 ** j), roots, proofss)
