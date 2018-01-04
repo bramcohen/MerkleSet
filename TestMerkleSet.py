@@ -9,7 +9,7 @@ def to_bytes(f, v):
 
 # Add numhashes things, only checking the hash halfway through to test lazy evaluation
 def _testlazy(numhashes, mset, roots, proofss):
-    hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
+    hashes = [blake2b(to_bytes(i, 10)).digest()[:32] for i in range(numhashes)]
     checkpoint = numhashes // 2
     for i in range(numhashes - 1):
         if i == checkpoint:
@@ -17,13 +17,13 @@ def _testlazy(numhashes, mset, roots, proofss):
             assert r
             assert proof == proofss[i][checkpoint // 2]
         mset.add_already_hashed(hashes[i])
-        mset.audit(hashes[:i + 1])
+        mset._audit(hashes[:i + 1])
     r, proof = mset.is_included_already_hashed(hashes[checkpoint])
     assert r
     assert proof == proofss[-1][checkpoint]
     for i in range(numhashes - 1, -1, -1):
         mset.remove_already_hashed(hashes[i])
-        mset.audit(hashes[:i])
+        mset._audit(hashes[:i])
         if i == checkpoint or i == 0:
             assert roots[i] == mset.get_root()
             for j in range(numhashes):
@@ -32,7 +32,7 @@ def _testlazy(numhashes, mset, roots, proofss):
                 assert proof == proofss[i][j]
 
 def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
-    hashes = [blake2s(to_bytes(i, 10)).digest() for i in range(numhashes)]
+    hashes = [blake2b(to_bytes(i, 10)).digest()[:32] for i in range(numhashes)]
     if oldroots is None:
         making_new = True
         roots = []
@@ -42,7 +42,7 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         roots = oldroots
         proofss = oldproofss
     assert mset.get_root() == BLANK
-    mset.audit([])
+    mset._audit([])
     # Add numhashes things one at a time, comparing to previously generated roots and proofs
     for i in range(numhashes):
         if not making_new:
@@ -66,22 +66,22 @@ def _testmset(numhashes, mset, oldroots = None, oldproofss = None):
         if i > 0:
             # Add a second time to check idempotence
             mset.add_already_hashed(hashes[i-1])
-            mset.audit(hashes[:i])
+            mset._audit(hashes[:i])
             assert mset.get_root() == roots[i]
             for j in range(numhashes):
                 r, proof = mset.is_included_already_hashed(hashes[j])
                 assert proof == proofs[j]
                 assert r == (j < i)
         mset.add_already_hashed(hashes[i])
-        mset.audit(hashes[:i+1])
+        mset._audit(hashes[:i+1])
         proofss.append(proofs)
     mset.get_root()
-    mset.audit(hashes)
+    mset._audit(hashes)
     # Remove everything one at a time checking in that direction as well
     for i in range(numhashes - 1, -1, -1):
         for k in range(2):
             mset.remove_already_hashed(hashes[i])
-            mset.audit(hashes[:i])
+            mset._audit(hashes[:i])
             assert roots[i] == mset.get_root()
             for j in range(numhashes):
                 r, proof = mset.is_included_already_hashed(hashes[j])
